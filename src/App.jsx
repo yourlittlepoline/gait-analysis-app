@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { motion } from "framer-motion";
-import { Upload, AlertCircle, CheckCircle2, Video, Activity } from "lucide-react";
+import { Upload, CheckCircle2 } from "lucide-react";
 
 const LANDMARKS = {
   leftShoulder: 11,
@@ -8,21 +7,10 @@ const LANDMARKS = {
   leftHip: 23,
   rightHip: 24,
   leftKnee: 25,
-  rightKnee: 26,
   leftAnkle: 27,
-  rightAnkle: 28,
   leftHeel: 29,
   rightHeel: 30,
   leftFootIndex: 31,
-  rightFootIndex: 32,
-};
-
-const PHASE_REFERENCE = {
-  initialContact: { hip: 30, knee: 5, ankle: 0 },
-  loadingResponse: { hip: 25, knee: 15, ankle: 5 },
-  midStance: { hip: 0, knee: 5, ankle: 5 },
-  terminalStance: { hip: -10, knee: 0, ankle: 10 },
-  swing: { hip: 20, knee: 60, ankle: 0 },
 };
 
 function clamp(value, min, max) {
@@ -53,11 +41,7 @@ function signedAngleToVertical(top, bottom) {
 function getPoint(landmarks, idx, width, height) {
   const p = landmarks?.[idx];
   if (!p) return null;
-  return {
-    x: p.x * width,
-    y: p.y * height,
-    visibility: p.visibility ?? 0,
-  };
+  return { x: p.x * width, y: p.y * height };
 }
 
 function averagePoint(points) {
@@ -69,41 +53,12 @@ function averagePoint(points) {
   };
 }
 
-function formatPhaseName(name) {
-  return {
-    initialContact: "Initial contact",
-    loadingResponse: "Loading response",
-    midStance: "Mid stance",
-    terminalStance: "Terminal stance",
-    swing: "Swing",
-  }[name] || name;
-}
-
 function estimatePhase(metrics) {
-  if (!metrics) return "midStance";
   const { knee, ankle, heelAhead } = metrics;
-  if (heelAhead > 16 && knee < 20) return "initialContact";
-  if (heelAhead > 8 && knee >= 10 && knee <= 25) return "loadingResponse";
-  if (ankle >= 6 && knee < 12) return "terminalStance";
-  if (knee > 35) return "swing";
-  return "midStance";
-}
-
-function drawLine(ctx, a, b, stroke, width = 4) {
-  if (!a || !b) return;
-  ctx.beginPath();
-  ctx.moveTo(a.x, a.y);
-  ctx.lineTo(b.x, b.y);
-  ctx.lineWidth = width;
-  ctx.strokeStyle = stroke;
-  ctx.stroke();
-}
-
-function drawArcLabel(ctx, b, a, c, label, color) {
-  if (!a || !b || !c) return;
-  ctx.fillStyle = color;
-  ctx.font = "700 14px sans-serif";
-  ctx.fillText(label, b.x + 10, b.y - 10);
+  if (heelAhead > 16 && knee < 20) return "1";
+  if (heelAhead > 8 && knee >= 10 && knee <= 25) return "2";
+  if (ankle >= 6 && knee < 12) return "3";
+  return "4";
 }
 
 function extractMetrics(landmarks, width, height) {
@@ -128,45 +83,40 @@ function extractMetrics(landmarks, width, height) {
   const trunk = shoulderCenter && pelvisCenter ? signedAngleToVertical(shoulderCenter, pelvisCenter) ?? 0 : 0;
   const heelAhead = leftHeel && rightHeel ? leftHeel.x - rightHeel.x : 0;
 
-  const visiblePoints = [leftShoulder, leftHip, leftKnee, leftAnkle, leftFootIndex].filter(Boolean);
-  const meanX = visiblePoints.reduce((s, p) => s + p.x, 0) / Math.max(visiblePoints.length, 1);
-  const bodyHeight = visiblePoints.length >= 4 ? Math.abs((leftShoulder?.y ?? 0) - (leftAnkle?.y ?? height)) : 0;
-
   return {
-    points: { leftShoulder, rightShoulder, leftHip, rightHip, leftKnee, leftAnkle, leftFootIndex, leftHeel, rightHeel },
-    metrics: { hip, knee, ankle, trunk, heelAhead, meanX, bodyHeight },
+    points: { leftShoulder, leftHip, leftKnee, leftAnkle, leftFootIndex },
+    metrics: { hip, knee, ankle, trunk, heelAhead },
   };
 }
 
-function frameQuality(result, width, height) {
+function qualityScore(result, width, height) {
   if (!result) return 0;
-  const { points, metrics } = result;
-  const required = [points.leftShoulder, points.leftHip, points.leftKnee, points.leftAnkle, points.leftFootIndex];
-  const present = required.filter(Boolean).length;
-  let score = present * 20;
-  if (metrics.bodyHeight > height * 0.35) score += 15;
-  if (metrics.meanX > width * 0.15 && metrics.meanX < width * 0.85) score += 15;
+  const pts = Object.values(result.points).filter(Boolean);
+  if (pts.length < 5) return 0;
+  const xs = pts.map((p) => p.x);
+  const ys = pts.map((p) => p.y);
+  const bodyHeight = Math.max(...ys) - Math.min(...ys);
+  const centerX = xs.reduce((a, b) => a + b, 0) / xs.length;
+  let score = 60;
+  if (bodyHeight > height * 0.35) score += 20;
+  if (centerX > width * 0.15 && centerX < width * 0.85) score += 20;
   return score;
 }
 
-function buildComments(phase, metrics) {
-  const ref = PHASE_REFERENCE[phase] || PHASE_REFERENCE.midStance;
-  const notes = [];
+function comments(metrics) {
+  const out = [];
+  if (Math.abs(metrics.hip) > 20) out.push("Таз/бедро: отклонение");
+  else out.push("Таз: близко к нейтрали");
 
-  if (Math.abs(metrics.hip - ref.hip) > 12) {
-    notes.push(metrics.hip > ref.hip ? "Бедро подано вперёд сильнее референса." : "Бедро работает менее активно, чем ожидается для этой фазы.");
-  }
-  if (Math.abs(metrics.knee - ref.knee) > 12) {
-    notes.push(metrics.knee > ref.knee ? "Колено согнуто больше нормы для этой фазы." : "Колено сгибается меньше нормы для этой фазы.");
-  }
-  if (Math.abs(metrics.ankle - ref.ankle) > 8) {
-    notes.push(metrics.ankle > ref.ankle ? "Тыльное сгибание голеностопа выше референса." : "Не хватает тыльного сгибания в голеностопе.");
-  }
-  if (Math.abs(metrics.trunk) > 8) {
-    notes.push(metrics.trunk > 0 ? "Корпус заметно наклонён вперёд/в сторону." : "Есть отклонение положения корпуса от более нейтральной стойки.");
-  }
-  if (!notes.length) notes.push("Грубых отклонений по этому кадру не видно.");
-  return notes;
+  if (metrics.knee > 25) out.push("Колено: больше сгибания");
+  else if (metrics.knee < 5) out.push("Колено: мало сгибания");
+  else out.push("Колено: умеренно");
+
+  if (metrics.ankle < -5) out.push("Голеностоп: мало тыльного сгибания");
+  else if (metrics.ankle > 10) out.push("Голеностоп: много тыльного сгибания");
+  else out.push("Голеностоп: умеренно");
+
+  return out;
 }
 
 async function loadPoseLandmarker() {
@@ -187,48 +137,35 @@ async function loadPoseLandmarker() {
   });
 }
 
-function MetricCard({ label, value }) {
+function FrameCard({ frame, isActive, onClick }) {
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-      <div className="text-xs uppercase tracking-[0.16em] text-slate-500">{label}</div>
-      <div className="mt-2 text-lg font-semibold text-slate-100">{value}</div>
-    </div>
+    <button
+      onClick={onClick}
+      style={{
+        border: isActive ? "2px solid #fff" : "1px solid #334155",
+        background: "#0f172a",
+        color: "white",
+        borderRadius: 16,
+        padding: 12,
+        width: "100%",
+        textAlign: "center",
+        cursor: "pointer",
+      }}
+    >
+      {frame.phase}
+    </button>
   );
 }
 
-function SectionList({ title, items }) {
-  return (
-    <div>
-      <h3 className="mb-2 text-sm font-semibold uppercase tracking-[0.16em] text-slate-400">{title}</h3>
-      <div className="space-y-2">
-        {items.map((item, idx) => (
-          <div key={`${title}-${idx}`} className="rounded-2xl border border-slate-800 bg-slate-950/60 p-3 text-sm leading-6 text-slate-200">
-            {item}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function EmptyState({ text }) {
-  return (
-    <div className="rounded-3xl border border-dashed border-slate-700 bg-slate-950/50 p-8 text-center text-sm text-slate-400">
-      {text}
-    </div>
-  );
-}
-
-export default function GaitAnalysisMVP() {
+export default function App() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const poseLandmarkerRef = useRef(null);
 
   const [videoUrl, setVideoUrl] = useState("");
-  const [videoName, setVideoName] = useState("");
-  const [poseReady, setPoseReady] = useState(false);
-  const [loadingPose, setLoadingPose] = useState(false);
-  const [status, setStatus] = useState("Загрузи видео походки сбоку. Система выберет несколько удачных кадров, нарисует реальные углы и покажет простые комментарии по фазам.");
+  const [isReady, setIsReady] = useState(false);
+  const [isLoadingModel, setIsLoadingModel] = useState(false);
+  const [status, setStatus] = useState("Загрузите видео");
   const [error, setError] = useState("");
   const [frames, setFrames] = useState([]);
   const [selectedFrame, setSelectedFrame] = useState(0);
@@ -241,305 +178,214 @@ export default function GaitAnalysisMVP() {
     };
   }, [videoUrl]);
 
-  async function ensurePoseLandmarker() {
+  async function ensureModel() {
     if (poseLandmarkerRef.current) return poseLandmarkerRef.current;
-    setLoadingPose(true);
-    setError("");
+    setIsLoadingModel(true);
     try {
       const model = await loadPoseLandmarker();
       poseLandmarkerRef.current = model;
-      setPoseReady(true);
-      setStatus("Модель позы загружена. Можно запускать быстрый анализ кадров.");
       return model;
-    } catch (e) {
-      console.error(e);
-      setError("Не удалось загрузить модель позы. Проверь интернет и попробуй ещё раз.");
-      throw e;
     } finally {
-      setLoadingPose(false);
+      setIsLoadingModel(false);
     }
   }
 
-  function drawFrame(frame) {
-    const canvas = canvasRef.current;
+  function drawCurrent(frame) {
     const video = videoRef.current;
-    if (!canvas || !video || !frame) return;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || !frame) return;
+
+    const rect = video.getBoundingClientRect();
+    canvas.width = rect.width;
+    canvas.height = rect.height;
 
     const ctx = canvas.getContext("2d");
-    const width = canvas.width;
-    const height = canvas.height;
-    ctx.clearRect(0, 0, width, height);
-    ctx.drawImage(video, 0, 0, width, height);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
     const p = frame.points;
-    const blue = "rgba(56,189,248,0.95)";
-    drawLine(ctx, p.leftShoulder, p.leftHip, blue);
-    drawLine(ctx, p.leftHip, p.leftKnee, blue);
-    drawLine(ctx, p.leftKnee, p.leftAnkle, blue);
-    drawLine(ctx, p.leftAnkle, p.leftFootIndex, blue);
-
-    [p.leftShoulder, p.leftHip, p.leftKnee, p.leftAnkle, p.leftFootIndex].filter(Boolean).forEach((pt) => {
+    const line = (a, b) => {
+      if (!a || !b) return;
       ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
-      ctx.fillStyle = blue;
-      ctx.fill();
-    });
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "#38bdf8";
+      ctx.stroke();
+    };
 
-    drawArcLabel(ctx, p.leftHip, p.leftShoulder, p.leftKnee, `hip ${frame.metrics.hip.toFixed(0)}°`, "#f8fafc");
-    drawArcLabel(ctx, p.leftKnee, p.leftHip, p.leftAnkle, `knee ${frame.metrics.knee.toFixed(0)}°`, "#f8fafc");
-    drawArcLabel(ctx, p.leftAnkle, p.leftKnee, p.leftFootIndex, `ankle ${frame.metrics.ankle.toFixed(0)}°`, "#f8fafc");
+    line(p.leftShoulder, p.leftHip);
+    line(p.leftHip, p.leftKnee);
+    line(p.leftKnee, p.leftAnkle);
+    line(p.leftAnkle, p.leftFootIndex);
 
-    ctx.fillStyle = "rgba(2,6,23,0.82)";
-    ctx.fillRect(16, 16, 320, 88);
     ctx.fillStyle = "white";
-    ctx.font = "700 15px sans-serif";
-    ctx.fillText(formatPhaseName(frame.phase), 28, 44);
-    ctx.font = "500 14px sans-serif";
-    ctx.fillText(`frame ${selectedFrame + 1} / ${frames.length}`, 28, 72);
+    ctx.font = "700 14px sans-serif";
+    if (p.leftHip) ctx.fillText(`Таз ${frame.metrics.hip.toFixed(0)}°`, p.leftHip.x + 10, p.leftHip.y - 10);
+    if (p.leftKnee) ctx.fillText(`Колено ${frame.metrics.knee.toFixed(0)}°`, p.leftKnee.x + 10, p.leftKnee.y - 10);
+    if (p.leftAnkle) ctx.fillText(`Голеностоп ${frame.metrics.ankle.toFixed(0)}°`, p.leftAnkle.x + 10, p.leftAnkle.y - 10);
   }
 
-  async function runFastAnalysis() {
+  async function analyze() {
     const video = videoRef.current;
     const canvas = canvasRef.current;
-    if (!video || !canvas || !videoUrl) {
-      setError("Сначала загрузи видео.");
-      return;
-    }
+    if (!video || !canvas || !videoUrl) return;
     if (video.readyState < 2) {
-      setError("Видео ещё не готово. Подожди пару секунд и попробуй снова.");
+      setError("Видео ещё грузится");
       return;
     }
 
     setError("");
-    setFrames([]);
-    setSelectedFrame(0);
-    setStatus("Ищу несколько удачных кадров и считаю углы...");
+    setStatus("Идёт анализ...");
 
-    let model;
-    try {
-      model = await ensurePoseLandmarker();
-    } catch {
-      return;
-    }
+    const model = await ensureModel();
+    const width = video.videoWidth || 720;
+    const height = video.videoHeight || 1280;
+    const times = [0.12, 0.28, 0.44, 0.6, 0.76].map((p) => Math.min((video.duration || 1) * p, Math.max((video.duration || 1) - 0.2, 0)));
+    const best = [];
 
-    const width = canvas.width;
-    const height = canvas.height;
-    const duration = video.duration || 1;
-    const checkpoints = [0.12, 0.22, 0.32, 0.42, 0.52, 0.62, 0.72, 0.82].map((p) =>
-      Math.min(duration * p, Math.max(duration - 0.2, 0))
-    );
-
-    const candidates = [];
-    video.pause();
-
-    for (const t of checkpoints) {
+    for (const time of times) {
       await new Promise((resolve) => {
-        const onSeeked = () => {
-          video.removeEventListener("seeked", onSeeked);
+        const done = () => {
+          video.removeEventListener("seeked", done);
           resolve();
         };
-        video.addEventListener("seeked", onSeeked);
-        video.currentTime = t;
+        video.addEventListener("seeked", done);
+        video.currentTime = time;
       });
 
-      const poseResult = model.detectForVideo(video, performance.now());
-      const landmarks = poseResult?.landmarks?.[0];
+      const result = model.detectForVideo(video, performance.now());
+      const landmarks = result?.landmarks?.[0];
       if (!landmarks) continue;
+      const extracted = extractMetrics(landmarks, width, height);
+      const score = qualityScore(extracted, width, height);
+      if (score < 70) continue;
 
-      const result = extractMetrics(landmarks, width, height);
-      const quality = frameQuality(result, width, height);
-      if (quality < 60) continue;
-
-      const phase = estimatePhase(result.metrics);
-      candidates.push({
-        time: t,
-        phase,
-        landmarks,
-        points: result.points,
-        metrics: result.metrics,
-        quality,
-        comments: buildComments(phase, result.metrics),
+      best.push({
+        phase: estimatePhase(extracted.metrics),
+        metrics: extracted.metrics,
+        points: extractMetrics(landmarks, canvas.width || width, canvas.height || height).points,
+        comments: comments(extracted.metrics),
+        time,
       });
     }
 
-    if (!candidates.length) {
-      setStatus("Не нашёл ни одного хорошего кадра. Нужен вид сбоку и человек целиком в кадре.");
-      setError("Видео не подходит для анализа: человек должен быть целиком в кадре, сбоку, без сильного наклона камеры.");
+    if (!best.length) {
+      setError("Не удалось выделить хорошие кадры");
+      setStatus("Попробуйте видео, где человек целиком в кадре");
       return;
     }
 
-    const bestByPhase = {};
-    for (const candidate of candidates) {
-      if (!bestByPhase[candidate.phase] || candidate.quality > bestByPhase[candidate.phase].quality) {
-        bestByPhase[candidate.phase] = candidate;
-      }
-    }
-
-    const orderedPhases = ["initialContact", "loadingResponse", "midStance", "terminalStance", "swing"];
-    const selected = orderedPhases.map((phase) => bestByPhase[phase]).filter(Boolean).slice(0, 4);
-
-    setFrames(selected);
+    const limited = best.slice(0, 4).map((f, i) => ({ ...f, phase: String(i + 1) }));
+    setFrames(limited);
     setSelectedFrame(0);
-    setStatus(`Готово: выбрано кадров ${selected.length}. Показываю реальные углы и короткие комментарии.`);
+    setStatus("Готово");
 
-    setTimeout(() => {
-      if (selected[0]) drawFrame(selected[0]);
-    }, 60);
+    setTimeout(() => drawCurrent(limited[0]), 60);
   }
 
-  function handleVideoLoaded() {
-    const canvas = canvasRef.current;
-    const video = videoRef.current;
-    if (!canvas || !video) return;
-    canvas.width = video.videoWidth || 960;
-    canvas.height = video.videoHeight || 540;
-    setStatus("Видео загружено. Можно запускать быстрый анализ.");
+  function onLoadedMetadata() {
+    setIsReady(true);
+    setStatus("Видео загружено");
   }
 
-  function handleUpload(event) {
+  function onUpload(event) {
     const file = event.target.files?.[0];
     if (!file) return;
     if (videoUrl?.startsWith("blob:")) URL.revokeObjectURL(videoUrl);
     const url = URL.createObjectURL(file);
     setVideoUrl(url);
-    setVideoName(file.name);
     setFrames([]);
     setSelectedFrame(0);
     setError("");
-    setStatus("Видео выбрано. Ждём загрузку метаданных...");
-
-    setTimeout(() => {
-      if (videoRef.current) videoRef.current.load();
-    }, 50);
+    setStatus("Видео загружается...");
+    setTimeout(() => videoRef.current?.load(), 50);
   }
 
   useEffect(() => {
-    if (currentFrame) drawFrame(currentFrame);
+    if (currentFrame) drawCurrent(currentFrame);
   }, [currentFrame]);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-50">
-      <div className="mx-auto max-w-7xl p-4 md:p-8">
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-8 grid gap-4 lg:grid-cols-[1.3fr_0.7fr]"
-        >
-          <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl">
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-900">Angle Gait MVP</span>
-              <span className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-300">без фейковой идеальной наложки, только реальные углы и фазы</span>
-            </div>
-            <h1 className="mt-4 text-3xl font-semibold tracking-tight">Разбор походки по кадрам и углам</h1>
-            <p className="mt-3 max-w-3xl text-slate-400">
-              Загрузи видео. Система выберет несколько пригодных кадров, посчитает hip, knee и ankle angle, присвоит вероятную фазу походки и даст короткие комментарии по отклонениям.
-            </p>
-          </div>
+    <div style={{ minHeight: "100vh", background: "#020617", color: "white", padding: 16, fontFamily: "Inter, system-ui, sans-serif" }}>
+      <div style={{ maxWidth: 520, margin: "0 auto", display: "grid", gap: 16 }}>
+        {!frames.length ? (
+          <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 24, padding: 20, display: "grid", gap: 16 }}>
+            <div style={{ fontSize: 28, fontWeight: 700 }}>Анализ походки</div>
 
-          <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl">
-            <h2 className="text-lg font-semibold">Статус системы</h2>
-            <p className="mt-1 text-slate-400">Упрощённая версия ради стабильности.</p>
-            <div className="mt-4 flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-              <span className="text-sm text-slate-300">Модель позы</span>
-              {poseReady ? (
-                <span className="flex items-center gap-2 text-sm text-emerald-400"><CheckCircle2 className="h-4 w-4" /> готова</span>
-              ) : (
-                <span className="flex items-center gap-2 text-sm text-amber-400"><AlertCircle className="h-4 w-4" /> не загружена</span>
-              )}
+            <label style={{ border: "1px dashed #334155", borderRadius: 18, padding: 16, display: "grid", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#cbd5e1" }}>
+                <Upload size={18} /> Загрузка видео
+              </div>
+              <input type="file" accept="video/*" onChange={onUpload} />
+            </label>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: isReady ? "#86efac" : "#cbd5e1" }}>
+              <CheckCircle2 size={18} /> {status}
             </div>
-            <p className="mt-4 text-sm leading-6 text-slate-300">{status}</p>
-            {error ? <p className="mt-4 rounded-2xl border border-red-900/50 bg-red-950/40 p-3 text-sm text-red-300">{error}</p> : null}
+
             <button
-              onClick={ensurePoseLandmarker}
-              disabled={loadingPose || poseReady}
-              className="mt-4 w-full rounded-2xl bg-slate-100 px-4 py-3 font-medium text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={analyze}
+              disabled={!videoUrl || isLoadingModel}
+              style={{
+                background: "white",
+                color: "#020617",
+                border: 0,
+                borderRadius: 16,
+                padding: "14px 16px",
+                fontWeight: 700,
+                cursor: "pointer",
+                opacity: !videoUrl || isLoadingModel ? 0.5 : 1,
+              }}
             >
-              {loadingPose ? "Загрузка модели…" : poseReady ? "Модель загружена" : "Подготовить модель"}
+              Начать анализ
             </button>
+
+            <video
+              ref={videoRef}
+              src={videoUrl}
+              playsInline
+              muted
+              preload="metadata"
+              onLoadedMetadata={onLoadedMetadata}
+              style={{ display: "none" }}
+            />
           </div>
-        </motion.div>
-
-        <div className="grid gap-6 lg:grid-cols-[1.25fr_0.75fr]">
-          <div className="space-y-6">
-            <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl">
-              <h2 className="flex items-center gap-2 text-xl font-semibold"><Video className="h-5 w-5" /> Видео</h2>
-              <p className="mt-2 text-slate-400">Нужен боковой вид, человек целиком в кадре, лучше 5–8 секунд и 2–4 шага.</p>
-
-              <div className="mt-4 rounded-3xl border border-dashed border-slate-700 bg-slate-950/50 p-6 text-center">
-                <Upload className="mx-auto mb-3 h-8 w-8 text-slate-400" />
-                <p className="mb-3 text-sm text-slate-300">Загрузи MP4 / MOV / WEBM с проходкой.</p>
-                <input type="file" accept="video/*" onChange={handleUpload} className="block w-full rounded-2xl border border-slate-800 bg-slate-900 p-3 text-slate-100" />
-                {videoName ? <p className="mt-3 text-sm text-slate-400">Файл: {videoName}</p> : null}
-              </div>
-
-              <div className="mt-6 overflow-hidden rounded-3xl border border-slate-800 bg-black">
-                <div className="relative aspect-video w-full bg-black">
-                  <video
-                    ref={videoRef}
-                    src={videoUrl}
-                    playsInline
-                    muted
-                    preload="metadata"
-                    controls
-                    onLoadedMetadata={handleVideoLoaded}
-                    className="h-full w-full object-contain"
-                  />
-                  <canvas ref={canvasRef} className="absolute inset-0 h-full w-full pointer-events-none" />
-                </div>
-              </div>
-
-              <button
-                onClick={runFastAnalysis}
-                disabled={!videoUrl || loadingPose}
-                className="mt-4 inline-flex items-center gap-2 rounded-2xl bg-slate-700 px-4 py-3 font-medium text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                <Activity className="h-4 w-4" /> Анализировать кадры
-              </button>
+        ) : (
+          <div style={{ display: "grid", gap: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+              {frames.map((frame, idx) => (
+                <FrameCard key={idx} frame={frame} isActive={idx === selectedFrame} onClick={() => setSelectedFrame(idx)} />
+              ))}
             </div>
-          </div>
 
-          <div className="space-y-6">
-            <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl">
-              <h2 className="text-xl font-semibold">Выбранные кадры</h2>
-              <p className="mt-2 text-slate-400">Берём не всё видео, а только несколько наиболее пригодных кадров.</p>
-              <div className="mt-4 space-y-2">
-                {frames.length ? (
-                  frames.map((frame, idx) => (
-                    <button
-                      key={`${frame.phase}-${idx}`}
-                      onClick={() => setSelectedFrame(idx)}
-                      className={`w-full rounded-2xl px-4 py-3 text-left font-medium ${idx === selectedFrame ? "bg-slate-100 text-slate-900" : "bg-slate-800 text-slate-100"}`}
-                    >
-                      {formatPhaseName(frame.phase)}
-                    </button>
-                  ))
-                ) : (
-                  <EmptyState text="После анализа здесь появятся выбранные кадры и фазы." />
-                )}
+            <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 24, overflow: "hidden" }}>
+              <div style={{ position: "relative", width: "100%" }}>
+                <video
+                  ref={videoRef}
+                  src={videoUrl}
+                  playsInline
+                  muted
+                  preload="metadata"
+                  controls
+                  style={{ width: "100%", display: "block" }}
+                />
+                <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} />
               </div>
             </div>
 
-            <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl">
-              <h2 className="text-xl font-semibold">Углы и комментарии</h2>
-              <p className="mt-2 text-slate-400">Показываем реальные измеренные углы, а не псевдо-идеальный скелет.</p>
-              <div className="mt-4">
-                {currentFrame ? (
-                  <div className="space-y-5">
-                    <div className="grid grid-cols-2 gap-3">
-                      <MetricCard label="Фаза" value={formatPhaseName(currentFrame.phase)} />
-                      <MetricCard label="Hip" value={`${currentFrame.metrics.hip.toFixed(1)}°`} />
-                      <MetricCard label="Knee" value={`${currentFrame.metrics.knee.toFixed(1)}°`} />
-                      <MetricCard label="Ankle" value={`${currentFrame.metrics.ankle.toFixed(1)}°`} />
-                    </div>
-                    <SectionList title="Комментарии" items={currentFrame.comments} />
-                  </div>
-                ) : (
-                  <EmptyState text="После анализа здесь появятся углы и короткие выводы по выбранному кадру." />
-                )}
-              </div>
+            <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 24, padding: 16, display: "grid", gap: 12 }}>
+              <div style={{ fontWeight: 700 }}>Таз</div>
+              <div>{currentFrame?.comments?.[0]}</div>
+              <div style={{ fontWeight: 700 }}>Колено</div>
+              <div>{currentFrame?.comments?.[1]}</div>
+              <div style={{ fontWeight: 700 }}>Голеностоп</div>
+              <div>{currentFrame?.comments?.[2]}</div>
             </div>
           </div>
-        </div>
+        )}
+
+        {error ? <div style={{ color: "#fca5a5" }}>{error}</div> : null}
       </div>
     </div>
   );
