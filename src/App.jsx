@@ -2,14 +2,6 @@ import React, { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import { Upload, AlertCircle, CheckCircle2, Video, Activity } from "lucide-react";
 
-const IDEAL_GAIT = {
-  initialContact: { hipFlexion: 30, kneeFlexion: 5, ankleDorsi: 0, pelvicDrop: 0 },
-  loadingResponse: { hipFlexion: 25, kneeFlexion: 15, ankleDorsi: 5, pelvicDrop: 3 },
-  midStance: { hipFlexion: 0, kneeFlexion: 5, ankleDorsi: 5, pelvicDrop: 0 },
-  terminalStance: { hipFlexion: -10, kneeFlexion: 0, ankleDorsi: 10, pelvicDrop: 0 },
-  swing: { hipFlexion: 20, kneeFlexion: 60, ankleDorsi: 0, pelvicDrop: 0 },
-};
-
 const LANDMARKS = {
   leftShoulder: 11,
   rightShoulder: 12,
@@ -23,6 +15,14 @@ const LANDMARKS = {
   rightHeel: 30,
   leftFootIndex: 31,
   rightFootIndex: 32,
+};
+
+const PHASE_REFERENCE = {
+  initialContact: { hip: 30, knee: 5, ankle: 0 },
+  loadingResponse: { hip: 25, knee: 15, ankle: 5 },
+  midStance: { hip: 0, knee: 5, ankle: 5 },
+  terminalStance: { hip: -10, knee: 0, ankle: 10 },
+  swing: { hip: 20, knee: 60, ankle: 0 },
 };
 
 function clamp(value, min, max) {
@@ -53,7 +53,11 @@ function signedAngleToVertical(top, bottom) {
 function getPoint(landmarks, idx, width, height) {
   const p = landmarks?.[idx];
   if (!p) return null;
-  return { x: p.x * width, y: p.y * height };
+  return {
+    x: p.x * width,
+    y: p.y * height,
+    visibility: p.visibility ?? 0,
+  };
 }
 
 function averagePoint(points) {
@@ -63,20 +67,6 @@ function averagePoint(points) {
     x: valid.reduce((s, p) => s + p.x, 0) / valid.length,
     y: valid.reduce((s, p) => s + p.y, 0) / valid.length,
   };
-}
-
-function distance(a, b) {
-  return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function estimatePhase(metrics) {
-  if (!metrics) return "midStance";
-  const { kneeFlexion, ankleDorsi, heelAhead } = metrics;
-  if (heelAhead > 16 && kneeFlexion < 20) return "initialContact";
-  if (heelAhead > 8 && kneeFlexion >= 10 && kneeFlexion <= 25) return "loadingResponse";
-  if (ankleDorsi >= 6 && kneeFlexion < 12) return "terminalStance";
-  if (kneeFlexion > 35) return "swing";
-  return "midStance";
 }
 
 function formatPhaseName(name) {
@@ -89,6 +79,16 @@ function formatPhaseName(name) {
   }[name] || name;
 }
 
+function estimatePhase(metrics) {
+  if (!metrics) return "midStance";
+  const { knee, ankle, heelAhead } = metrics;
+  if (heelAhead > 16 && knee < 20) return "initialContact";
+  if (heelAhead > 8 && knee >= 10 && knee <= 25) return "loadingResponse";
+  if (ankle >= 6 && knee < 12) return "terminalStance";
+  if (knee > 35) return "swing";
+  return "midStance";
+}
+
 function drawLine(ctx, a, b, stroke, width = 4) {
   if (!a || !b) return;
   ctx.beginPath();
@@ -99,54 +99,79 @@ function drawLine(ctx, a, b, stroke, width = 4) {
   ctx.stroke();
 }
 
-function drawCircle(ctx, x, y, r, fill) {
-  ctx.beginPath();
-  ctx.arc(x, y, r, 0, Math.PI * 2);
-  ctx.fillStyle = fill;
-  ctx.fill();
+function drawArcLabel(ctx, b, a, c, label, color) {
+  if (!a || !b || !c) return;
+  ctx.fillStyle = color;
+  ctx.font = "700 14px sans-serif";
+  ctx.fillText(label, b.x + 10, b.y - 10);
 }
 
-function idealOverlayFromBody(points, phaseName) {
-  const leftHip = points.leftHip;
-  const leftKnee = points.leftKnee;
-  const leftAnkle = points.leftAnkle;
-  const pelvisCenter = averagePoint([points.leftHip, points.rightHip]);
-  const shoulderCenter = averagePoint([points.leftShoulder, points.rightShoulder]);
-  if (!leftHip || !leftKnee || !leftAnkle || !pelvisCenter || !shoulderCenter) return null;
+function extractMetrics(landmarks, width, height) {
+  const leftShoulder = getPoint(landmarks, LANDMARKS.leftShoulder, width, height);
+  const rightShoulder = getPoint(landmarks, LANDMARKS.rightShoulder, width, height);
+  const leftHip = getPoint(landmarks, LANDMARKS.leftHip, width, height);
+  const rightHip = getPoint(landmarks, LANDMARKS.rightHip, width, height);
+  const leftKnee = getPoint(landmarks, LANDMARKS.leftKnee, width, height);
+  const leftAnkle = getPoint(landmarks, LANDMARKS.leftAnkle, width, height);
+  const leftHeel = getPoint(landmarks, LANDMARKS.leftHeel, width, height);
+  const rightHeel = getPoint(landmarks, LANDMARKS.rightHeel, width, height);
+  const leftFootIndex = getPoint(landmarks, LANDMARKS.leftFootIndex, width, height);
 
-  const thigh = distance(leftHip, leftKnee) || 90;
-  const shank = distance(leftKnee, leftAnkle) || 90;
-  const trunk = distance(pelvisCenter, shoulderCenter) || 120;
-  const foot = Math.max(28, shank * 0.35);
+  const shoulderCenter = averagePoint([leftShoulder, rightShoulder]);
+  const pelvisCenter = averagePoint([leftHip, rightHip]);
 
-  const ideal = IDEAL_GAIT[phaseName] || IDEAL_GAIT.midStance;
-  const hipAngle = (ideal.hipFlexion * Math.PI) / 180;
-  const kneeAngle = ((180 - ideal.kneeFlexion) * Math.PI) / 180;
-  const ankleAngle = ((90 - ideal.ankleDorsi) * Math.PI) / 180;
+  const hip = signedAngleToVertical(leftHip, leftKnee) ?? 0;
+  const rawKnee = angle3(leftHip, leftKnee, leftAnkle) ?? 180;
+  const knee = Math.max(0, 180 - rawKnee);
+  const rawAnkle = angle3(leftKnee, leftAnkle, leftFootIndex) ?? 90;
+  const ankle = 90 - rawAnkle;
+  const trunk = shoulderCenter && pelvisCenter ? signedAngleToVertical(shoulderCenter, pelvisCenter) ?? 0 : 0;
+  const heelAhead = leftHeel && rightHeel ? leftHeel.x - rightHeel.x : 0;
 
-  const hip = { ...leftHip };
-  const knee = {
-    x: hip.x + Math.sin(hipAngle) * thigh,
-    y: hip.y + Math.cos(hipAngle) * thigh,
+  const visiblePoints = [leftShoulder, leftHip, leftKnee, leftAnkle, leftFootIndex].filter(Boolean);
+  const meanX = visiblePoints.reduce((s, p) => s + p.x, 0) / Math.max(visiblePoints.length, 1);
+  const bodyHeight = visiblePoints.length >= 4 ? Math.abs((leftShoulder?.y ?? 0) - (leftAnkle?.y ?? height)) : 0;
+
+  return {
+    points: { leftShoulder, rightShoulder, leftHip, rightHip, leftKnee, leftAnkle, leftFootIndex, leftHeel, rightHeel },
+    metrics: { hip, knee, ankle, trunk, heelAhead, meanX, bodyHeight },
   };
-  const shankDirection = hipAngle - Math.PI + kneeAngle;
-  const ankle = {
-    x: knee.x + Math.sin(shankDirection) * shank,
-    y: knee.y + Math.cos(shankDirection) * shank,
-  };
-  const toe = {
-    x: ankle.x + Math.cos(ankleAngle) * foot,
-    y: ankle.y - Math.sin(ankleAngle) * foot * 0.35,
-  };
-  const shoulder = { x: hip.x, y: hip.y - trunk };
+}
 
-  return { shoulder, hip, knee, ankle, toe };
+function frameQuality(result, width, height) {
+  if (!result) return 0;
+  const { points, metrics } = result;
+  const required = [points.leftShoulder, points.leftHip, points.leftKnee, points.leftAnkle, points.leftFootIndex];
+  const present = required.filter(Boolean).length;
+  let score = present * 20;
+  if (metrics.bodyHeight > height * 0.35) score += 15;
+  if (metrics.meanX > width * 0.15 && metrics.meanX < width * 0.85) score += 15;
+  return score;
+}
+
+function buildComments(phase, metrics) {
+  const ref = PHASE_REFERENCE[phase] || PHASE_REFERENCE.midStance;
+  const notes = [];
+
+  if (Math.abs(metrics.hip - ref.hip) > 12) {
+    notes.push(metrics.hip > ref.hip ? "Бедро подано вперёд сильнее референса." : "Бедро работает менее активно, чем ожидается для этой фазы.");
+  }
+  if (Math.abs(metrics.knee - ref.knee) > 12) {
+    notes.push(metrics.knee > ref.knee ? "Колено согнуто больше нормы для этой фазы." : "Колено сгибается меньше нормы для этой фазы.");
+  }
+  if (Math.abs(metrics.ankle - ref.ankle) > 8) {
+    notes.push(metrics.ankle > ref.ankle ? "Тыльное сгибание голеностопа выше референса." : "Не хватает тыльного сгибания в голеностопе.");
+  }
+  if (Math.abs(metrics.trunk) > 8) {
+    notes.push(metrics.trunk > 0 ? "Корпус заметно наклонён вперёд/в сторону." : "Есть отклонение положения корпуса от более нейтральной стойки.");
+  }
+  if (!notes.length) notes.push("Грубых отклонений по этому кадру не видно.");
+  return notes;
 }
 
 async function loadPoseLandmarker() {
   const tasksVision = await import("@mediapipe/tasks-vision");
   const { FilesetResolver, PoseLandmarker } = tasksVision;
-
   const filesetResolver = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
   );
@@ -203,7 +228,7 @@ export default function GaitAnalysisMVP() {
   const [videoName, setVideoName] = useState("");
   const [poseReady, setPoseReady] = useState(false);
   const [loadingPose, setLoadingPose] = useState(false);
-  const [status, setStatus] = useState("Загрузи видео походки сбоку. Система выберет ключевые этапы и покажет сравнение: зелёный референс и красная фактическая поза.");
+  const [status, setStatus] = useState("Загрузи видео походки сбоку. Система выберет несколько удачных кадров, нарисует реальные углы и покажет простые комментарии по фазам.");
   const [error, setError] = useState("");
   const [frames, setFrames] = useState([]);
   const [selectedFrame, setSelectedFrame] = useState(0);
@@ -224,68 +249,18 @@ export default function GaitAnalysisMVP() {
       const model = await loadPoseLandmarker();
       poseLandmarkerRef.current = model;
       setPoseReady(true);
-      setStatus("Модель позы загружена. Можно запускать быстрый анализ.");
+      setStatus("Модель позы загружена. Можно запускать быстрый анализ кадров.");
       return model;
     } catch (e) {
       console.error(e);
-      setError("Не удалось загрузить MediaPipe Pose. Проверь интернет и попробуй ещё раз.");
+      setError("Не удалось загрузить модель позы. Проверь интернет и попробуй ещё раз.");
       throw e;
     } finally {
       setLoadingPose(false);
     }
   }
 
-  function analyzeLandmarks(landmarks, width, height) {
-    const leftShoulder = getPoint(landmarks, LANDMARKS.leftShoulder, width, height);
-    const rightShoulder = getPoint(landmarks, LANDMARKS.rightShoulder, width, height);
-    const leftHip = getPoint(landmarks, LANDMARKS.leftHip, width, height);
-    const rightHip = getPoint(landmarks, LANDMARKS.rightHip, width, height);
-    const leftKnee = getPoint(landmarks, LANDMARKS.leftKnee, width, height);
-    const leftAnkle = getPoint(landmarks, LANDMARKS.leftAnkle, width, height);
-    const leftHeel = getPoint(landmarks, LANDMARKS.leftHeel, width, height);
-    const rightHeel = getPoint(landmarks, LANDMARKS.rightHeel, width, height);
-    const leftFootIndex = getPoint(landmarks, LANDMARKS.leftFootIndex, width, height);
-
-    const shoulderCenter = averagePoint([leftShoulder, rightShoulder]);
-    const pelvisCenter = averagePoint([leftHip, rightHip]);
-
-    const hipFlexion = signedAngleToVertical(leftHip, leftKnee) ?? 0;
-    const rawKnee = angle3(leftHip, leftKnee, leftAnkle) ?? 180;
-    const kneeFlexion = Math.max(0, 180 - rawKnee);
-    const rawAnkle = angle3(leftKnee, leftAnkle, leftFootIndex) ?? 90;
-    const ankleDorsi = 90 - rawAnkle;
-    const pelvicDrop = shoulderCenter && pelvisCenter ? signedAngleToVertical(shoulderCenter, pelvisCenter) ?? 0 : 0;
-    const heelAhead = leftHeel && rightHeel ? leftHeel.x - rightHeel.x : 0;
-
-    const metrics = { hipFlexion, kneeFlexion, ankleDorsi, pelvicDrop, heelAhead };
-    const phase = estimatePhase(metrics);
-    return { phase, metrics };
-  }
-
-  function deviationComments(metrics, phase) {
-    const ideal = IDEAL_GAIT[phase] || IDEAL_GAIT.midStance;
-    const notes = [];
-
-    if (Math.abs(metrics.hipFlexion - ideal.hipFlexion) > 12) {
-      notes.push(metrics.hipFlexion > ideal.hipFlexion ? "Бедро подано вперёд сильнее референса." : "Бедро работает менее активно, чем ожидается в этой фазе.");
-    }
-    if (Math.abs(metrics.kneeFlexion - ideal.kneeFlexion) > 12) {
-      notes.push(metrics.kneeFlexion > ideal.kneeFlexion ? "Колено согнуто больше нормы для этой фазы." : "Колено сгибается меньше нормы для этой фазы.");
-    }
-    if (Math.abs(metrics.ankleDorsi - ideal.ankleDorsi) > 8) {
-      notes.push(metrics.ankleDorsi > ideal.ankleDorsi ? "Голеностоп уходит в избыточное тыльное сгибание." : "Не хватает тыльного сгибания в голеностопе.");
-    }
-    if (Math.abs(metrics.pelvicDrop - ideal.pelvicDrop) > 5) {
-      notes.push("Есть отклонение по положению таза или компенсаторный наклон корпуса.");
-    }
-    if (!notes.length) {
-      notes.push("Грубых отклонений в этой фазе не видно.");
-    }
-
-    return notes;
-  }
-
-  function drawComparison(frame) {
+  function drawFrame(frame) {
     const canvas = canvasRef.current;
     const video = videoRef.current;
     if (!canvas || !video || !frame) return;
@@ -296,48 +271,31 @@ export default function GaitAnalysisMVP() {
     ctx.clearRect(0, 0, width, height);
     ctx.drawImage(video, 0, 0, width, height);
 
-    const points = {
-      leftShoulder: getPoint(frame.landmarks, LANDMARKS.leftShoulder, width, height),
-      rightShoulder: getPoint(frame.landmarks, LANDMARKS.rightShoulder, width, height),
-      leftHip: getPoint(frame.landmarks, LANDMARKS.leftHip, width, height),
-      rightHip: getPoint(frame.landmarks, LANDMARKS.rightHip, width, height),
-      leftKnee: getPoint(frame.landmarks, LANDMARKS.leftKnee, width, height),
-      rightKnee: getPoint(frame.landmarks, LANDMARKS.rightKnee, width, height),
-      leftAnkle: getPoint(frame.landmarks, LANDMARKS.leftAnkle, width, height),
-      rightAnkle: getPoint(frame.landmarks, LANDMARKS.rightAnkle, width, height),
-      leftHeel: getPoint(frame.landmarks, LANDMARKS.leftHeel, width, height),
-      rightHeel: getPoint(frame.landmarks, LANDMARKS.rightHeel, width, height),
-      leftFootIndex: getPoint(frame.landmarks, LANDMARKS.leftFootIndex, width, height),
-      rightFootIndex: getPoint(frame.landmarks, LANDMARKS.rightFootIndex, width, height),
-    };
+    const p = frame.points;
+    const blue = "rgba(56,189,248,0.95)";
+    drawLine(ctx, p.leftShoulder, p.leftHip, blue);
+    drawLine(ctx, p.leftHip, p.leftKnee, blue);
+    drawLine(ctx, p.leftKnee, p.leftAnkle, blue);
+    drawLine(ctx, p.leftAnkle, p.leftFootIndex, blue);
 
-    const ideal = idealOverlayFromBody(points, frame.phase);
-    if (ideal) {
-      drawLine(ctx, ideal.shoulder, ideal.hip, "rgba(34,197,94,0.95)");
-      drawLine(ctx, ideal.hip, ideal.knee, "rgba(34,197,94,0.95)");
-      drawLine(ctx, ideal.knee, ideal.ankle, "rgba(34,197,94,0.95)");
-      drawLine(ctx, ideal.ankle, ideal.toe, "rgba(34,197,94,0.95)");
-      [ideal.shoulder, ideal.hip, ideal.knee, ideal.ankle, ideal.toe].forEach((p) => drawCircle(ctx, p.x, p.y, 4, "rgba(34,197,94,0.95)"));
-    }
+    [p.leftShoulder, p.leftHip, p.leftKnee, p.leftAnkle, p.leftFootIndex].filter(Boolean).forEach((pt) => {
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = blue;
+      ctx.fill();
+    });
 
-    const actual = [points.leftShoulder, points.leftHip, points.leftKnee, points.leftAnkle, points.leftFootIndex].filter(Boolean);
-    for (let i = 0; i < actual.length - 1; i += 1) {
-      drawLine(ctx, actual[i], actual[i + 1], "rgba(239,68,68,0.95)");
-      drawCircle(ctx, actual[i].x, actual[i].y, 4, "rgba(239,68,68,0.95)");
-    }
-    const last = actual[actual.length - 1];
-    if (last) drawCircle(ctx, last.x, last.y, 4, "rgba(239,68,68,0.95)");
+    drawArcLabel(ctx, p.leftHip, p.leftShoulder, p.leftKnee, `hip ${frame.metrics.hip.toFixed(0)}°`, "#f8fafc");
+    drawArcLabel(ctx, p.leftKnee, p.leftHip, p.leftAnkle, `knee ${frame.metrics.knee.toFixed(0)}°`, "#f8fafc");
+    drawArcLabel(ctx, p.leftAnkle, p.leftKnee, p.leftFootIndex, `ankle ${frame.metrics.ankle.toFixed(0)}°`, "#f8fafc");
 
-    ctx.fillStyle = "rgba(2,6,23,0.8)";
-    ctx.fillRect(16, 16, 420, 130);
+    ctx.fillStyle = "rgba(2,6,23,0.82)";
+    ctx.fillRect(16, 16, 320, 88);
     ctx.fillStyle = "white";
     ctx.font = "700 15px sans-serif";
-    ctx.fillText(formatPhaseName(frame.phase), 28, 42);
-    ctx.fillStyle = "#22c55e";
+    ctx.fillText(formatPhaseName(frame.phase), 28, 44);
     ctx.font = "500 14px sans-serif";
-    ctx.fillText("Зелёный — как должно быть", 28, 74);
-    ctx.fillStyle = "#ef4444";
-    ctx.fillText("Красный — как есть", 28, 102);
+    ctx.fillText(`frame ${selectedFrame + 1} / ${frames.length}`, 28, 72);
   }
 
   async function runFastAnalysis() {
@@ -347,11 +305,15 @@ export default function GaitAnalysisMVP() {
       setError("Сначала загрузи видео.");
       return;
     }
+    if (video.readyState < 2) {
+      setError("Видео ещё не готово. Подожди пару секунд и попробуй снова.");
+      return;
+    }
 
     setError("");
     setFrames([]);
     setSelectedFrame(0);
-    setStatus("Идёт быстрый анализ ключевых фаз...");
+    setStatus("Ищу несколько удачных кадров и считаю углы...");
 
     let model;
     try {
@@ -363,10 +325,11 @@ export default function GaitAnalysisMVP() {
     const width = canvas.width;
     const height = canvas.height;
     const duration = video.duration || 1;
-    const checkpoints = [0.1, 0.28, 0.45, 0.62, 0.8].map((p) => Math.min(duration * p, Math.max(duration - 0.05, 0)));
-    const order = ["initialContact", "loadingResponse", "midStance", "terminalStance", "swing"];
-    const byPhase = {};
+    const checkpoints = [0.12, 0.22, 0.32, 0.42, 0.52, 0.62, 0.72, 0.82].map((p) =>
+      Math.min(duration * p, Math.max(duration - 0.2, 0))
+    );
 
+    const candidates = [];
     video.pause();
 
     for (const t of checkpoints) {
@@ -383,35 +346,53 @@ export default function GaitAnalysisMVP() {
       const landmarks = poseResult?.landmarks?.[0];
       if (!landmarks) continue;
 
-      const analyzed = analyzeLandmarks(landmarks, width, height);
-      if (!byPhase[analyzed.phase]) {
-        byPhase[analyzed.phase] = {
-          time: t,
-          phase: analyzed.phase,
-          landmarks,
-          metrics: analyzed.metrics,
-          comments: deviationComments(analyzed.metrics, analyzed.phase),
-        };
-      }
+      const result = extractMetrics(landmarks, width, height);
+      const quality = frameQuality(result, width, height);
+      if (quality < 60) continue;
+
+      const phase = estimatePhase(result.metrics);
+      candidates.push({
+        time: t,
+        phase,
+        landmarks,
+        points: result.points,
+        metrics: result.metrics,
+        quality,
+        comments: buildComments(phase, result.metrics),
+      });
     }
 
-    const selected = order.map((phase) => byPhase[phase]).filter(Boolean);
-    if (!selected.length) {
-      setStatus("Не удалось выделить ключевые фазы. Попробуй более чистое видео сбоку.");
+    if (!candidates.length) {
+      setStatus("Не нашёл ни одного хорошего кадра. Нужен вид сбоку и человек целиком в кадре.");
+      setError("Видео не подходит для анализа: человек должен быть целиком в кадре, сбоку, без сильного наклона камеры.");
       return;
     }
 
+    const bestByPhase = {};
+    for (const candidate of candidates) {
+      if (!bestByPhase[candidate.phase] || candidate.quality > bestByPhase[candidate.phase].quality) {
+        bestByPhase[candidate.phase] = candidate;
+      }
+    }
+
+    const orderedPhases = ["initialContact", "loadingResponse", "midStance", "terminalStance", "swing"];
+    const selected = orderedPhases.map((phase) => bestByPhase[phase]).filter(Boolean).slice(0, 4);
+
     setFrames(selected);
     setSelectedFrame(0);
-    setStatus(`Готово: найдено фаз ${selected.length}. Показываю только ключевые этапы и отклонения.`);
-    setTimeout(() => drawComparison(selected[0]), 50);
+    setStatus(`Готово: выбрано кадров ${selected.length}. Показываю реальные углы и короткие комментарии.`);
+
+    setTimeout(() => {
+      if (selected[0]) drawFrame(selected[0]);
+    }, 60);
   }
 
   function handleVideoLoaded() {
     const canvas = canvasRef.current;
-    if (!canvas) return;
-    canvas.width = 960;
-    canvas.height = 540;
+    const video = videoRef.current;
+    if (!canvas || !video) return;
+    canvas.width = video.videoWidth || 960;
+    canvas.height = video.videoHeight || 540;
     setStatus("Видео загружено. Можно запускать быстрый анализ.");
   }
 
@@ -425,10 +406,15 @@ export default function GaitAnalysisMVP() {
     setFrames([]);
     setSelectedFrame(0);
     setError("");
+    setStatus("Видео выбрано. Ждём загрузку метаданных...");
+
+    setTimeout(() => {
+      if (videoRef.current) videoRef.current.load();
+    }, 50);
   }
 
   useEffect(() => {
-    if (currentFrame) drawComparison(currentFrame);
+    if (currentFrame) drawFrame(currentFrame);
   }, [currentFrame]);
 
   return (
@@ -441,18 +427,18 @@ export default function GaitAnalysisMVP() {
         >
           <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl">
             <div className="flex flex-wrap items-center gap-3">
-              <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-900">Fast Gait MVP</span>
-              <span className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-300">быстрое фазовое сравнение вместо долгого покадрового анализа</span>
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-900">Angle Gait MVP</span>
+              <span className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-300">без фейковой идеальной наложки, только реальные углы и фазы</span>
             </div>
-            <h1 className="mt-4 text-3xl font-semibold tracking-tight">Поэтапное сравнение походки: как должно быть vs как есть</h1>
+            <h1 className="mt-4 text-3xl font-semibold tracking-tight">Разбор походки по кадрам и углам</h1>
             <p className="mt-3 max-w-3xl text-slate-400">
-              Загрузи видео. Система выделит только ключевые этапы походки, наложит зелёный референс поверх красной фактической позы и даст короткие комментарии по отклонениям.
+              Загрузи видео. Система выберет несколько пригодных кадров, посчитает hip, knee и ankle angle, присвоит вероятную фазу походки и даст короткие комментарии по отклонениям.
             </p>
           </div>
 
           <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl">
             <h2 className="text-lg font-semibold">Статус системы</h2>
-            <p className="mt-1 text-slate-400">Упрощённая версия ради скорости.</p>
+            <p className="mt-1 text-slate-400">Упрощённая версия ради стабильности.</p>
             <div className="mt-4 flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
               <span className="text-sm text-slate-300">Модель позы</span>
               {poseReady ? (
@@ -477,7 +463,7 @@ export default function GaitAnalysisMVP() {
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl">
               <h2 className="flex items-center gap-2 text-xl font-semibold"><Video className="h-5 w-5" /> Видео</h2>
-              <p className="mt-2 text-slate-400">Без камеры, без длинного отчёта, только видео сбоку и быстрый фазовый анализ.</p>
+              <p className="mt-2 text-slate-400">Нужен боковой вид, человек целиком в кадре, лучше 5–8 секунд и 2–4 шага.</p>
 
               <div className="mt-4 rounded-3xl border border-dashed border-slate-700 bg-slate-950/50 p-6 text-center">
                 <Upload className="mx-auto mb-3 h-8 w-8 text-slate-400" />
@@ -492,11 +478,13 @@ export default function GaitAnalysisMVP() {
                     ref={videoRef}
                     src={videoUrl}
                     playsInline
-                    controls={false}
-                    className="hidden"
+                    muted
+                    preload="metadata"
+                    controls
                     onLoadedMetadata={handleVideoLoaded}
+                    className="h-full w-full object-contain"
                   />
-                  <canvas ref={canvasRef} width={960} height={540} className="h-full w-full" />
+                  <canvas ref={canvasRef} className="absolute inset-0 h-full w-full pointer-events-none" />
                 </div>
               </div>
 
@@ -505,15 +493,15 @@ export default function GaitAnalysisMVP() {
                 disabled={!videoUrl || loadingPose}
                 className="mt-4 inline-flex items-center gap-2 rounded-2xl bg-slate-700 px-4 py-3 font-medium text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <Activity className="h-4 w-4" /> Быстрый анализ
+                <Activity className="h-4 w-4" /> Анализировать кадры
               </button>
             </div>
           </div>
 
           <div className="space-y-6">
             <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl">
-              <h2 className="text-xl font-semibold">Этапы походки</h2>
-              <p className="mt-2 text-slate-400">Показываем только найденные ключевые этапы.</p>
+              <h2 className="text-xl font-semibold">Выбранные кадры</h2>
+              <p className="mt-2 text-slate-400">Берём не всё видео, а только несколько наиболее пригодных кадров.</p>
               <div className="mt-4 space-y-2">
                 {frames.length ? (
                   frames.map((frame, idx) => (
@@ -526,27 +514,27 @@ export default function GaitAnalysisMVP() {
                     </button>
                   ))
                 ) : (
-                  <EmptyState text="После анализа здесь появятся ключевые этапы походки." />
+                  <EmptyState text="После анализа здесь появятся выбранные кадры и фазы." />
                 )}
               </div>
             </div>
 
             <div className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6 shadow-2xl">
-              <h2 className="text-xl font-semibold">Отклонения в выбранной фазе</h2>
-              <p className="mt-2 text-slate-400">Зелёный — как должно быть. Красный — как есть.</p>
+              <h2 className="text-xl font-semibold">Углы и комментарии</h2>
+              <p className="mt-2 text-slate-400">Показываем реальные измеренные углы, а не псевдо-идеальный скелет.</p>
               <div className="mt-4">
                 {currentFrame ? (
                   <div className="space-y-5">
                     <div className="grid grid-cols-2 gap-3">
                       <MetricCard label="Фаза" value={formatPhaseName(currentFrame.phase)} />
-                      <MetricCard label="Hip" value={`${currentFrame.metrics.hipFlexion.toFixed(1)}°`} />
-                      <MetricCard label="Knee" value={`${currentFrame.metrics.kneeFlexion.toFixed(1)}°`} />
-                      <MetricCard label="Ankle" value={`${currentFrame.metrics.ankleDorsi.toFixed(1)}°`} />
+                      <MetricCard label="Hip" value={`${currentFrame.metrics.hip.toFixed(1)}°`} />
+                      <MetricCard label="Knee" value={`${currentFrame.metrics.knee.toFixed(1)}°`} />
+                      <MetricCard label="Ankle" value={`${currentFrame.metrics.ankle.toFixed(1)}°`} />
                     </div>
                     <SectionList title="Комментарии" items={currentFrame.comments} />
                   </div>
                 ) : (
-                  <EmptyState text="Выбери фазу, и здесь появятся комментарии по отклонениям." />
+                  <EmptyState text="После анализа здесь появятся углы и короткие выводы по выбранному кадру." />
                 )}
               </div>
             </div>
