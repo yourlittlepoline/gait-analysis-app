@@ -245,6 +245,22 @@ export default function App() {
     ctx.fillText(`Фаза: ${frame.phaseTitle}`, 22, 40);
   }
 
+  async function showFrame(frame) {
+    const video = videoRef.current;
+    if (!video || !frame) return;
+
+    await new Promise((resolve) => {
+      const done = () => {
+        video.removeEventListener("seeked", done);
+        resolve();
+      };
+      video.addEventListener("seeked", done);
+      video.currentTime = frame.time;
+    });
+
+    drawCurrent(frame);
+  }
+
   async function analyze() {
     const video = videoRef.current;
     if (!video || !videoUrl) return;
@@ -369,7 +385,9 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (currentFrame) drawCurrent(currentFrame);
+    if (currentFrame) {
+      showFrame(currentFrame);
+    }
   }, [currentFrame]);
 
   return (
@@ -458,3 +476,4 @@ export default function App() {
     </div>
   );
 }
+
