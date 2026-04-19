@@ -112,6 +112,10 @@ function extractLeg(landmarks, side, width, height) {
   const shankAngle = signedAngleToVertical(knee, ankle) ?? 0;
   const legSize = distance(hip, knee) + distance(knee, ankle) + distance(ankle, footPoint);
   const toeClearance = toe && heel ? Math.max(-40, Math.min(40, heel.y - toe.y)) : 0;
+  const isFootOnGround =
+  heel && toe
+    ? Math.abs(heel.y - toe.y) < height * 0.02
+    : false;
   const depthPoints = [hip, knee, ankle, heel, toe].filter(Boolean);
   const meanZ = depthPoints.length ? depthPoints.reduce((s, p) => s + (p.z ?? 0), 0) / depthPoints.length : 0;
 
@@ -126,6 +130,7 @@ function extractLeg(landmarks, side, width, height) {
       toeClearance,
       legSize,
       meanZ,
+      isFootOnGround,
     },
   };
 }
@@ -231,6 +236,16 @@ function phaseScore(metrics, phaseKey) {
 }
 
 function rankPhases(metrics) {
+  if (!metrics.isFootOnGround) {
+  return {
+    bestPhase: "swingClearance",
+    bestCost: 0,
+    secondPhase: null,
+    secondCost: 0,
+    confidence: 0.9,
+    ranked: [],
+  };
+}
   const ranked = Object.keys(PHASES)
     .map((phaseKey) => ({
       phaseKey,
