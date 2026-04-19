@@ -256,25 +256,32 @@ function rankPhases(metrics) {
 function detectFrameLevelPathology(metrics, ranked) {
   const flags = [];
 
-  if (ranked.bestCost > 35) flags.push("poor_phase_fit");
-  if (ranked.confidence < 0.18) flags.push("phase_ambiguity");
+  // Было слишком чувствительно
+  if (ranked.bestCost > 52) flags.push("poor_phase_fit");
+  if (ranked.confidence < 0.1) flags.push("phase_ambiguity");
 
-  if (metrics.knee > 75) flags.push("excessive_knee_flexion");
-  if (metrics.knee < 2 && metrics.shankAngle > 10) flags.push("possible_knee_hyperextension_pattern");
-  if (metrics.ankle < -15) flags.push("marked_plantarflexion");
-  if (metrics.ankle > 25) flags.push("marked_dorsiflexion");
-  if (metrics.toeClearance < 6) flags.push("low_toe_clearance");
-  if (Math.abs(metrics.footProgression) > 20) flags.push("marked_foot_progression_deviation");
+  // Оставляем только более грубые отклонения
+  if (metrics.knee > 85) flags.push("excessive_knee_flexion");
+  if (metrics.knee < 0 && metrics.shankAngle > 12) {
+    flags.push("possible_knee_hyperextension_pattern");
+  }
 
-  if (ranked.bestPhase === "terminalStance" && metrics.ankle < 3) {
+  if (metrics.ankle < -20) flags.push("marked_plantarflexion");
+  if (metrics.ankle > 30) flags.push("marked_dorsiflexion");
+  if (metrics.toeClearance < 3) flags.push("low_toe_clearance");
+  if (Math.abs(metrics.footProgression) > 28) {
+    flags.push("marked_foot_progression_deviation");
+  }
+
+  if (ranked.bestPhase === "terminalStance" && metrics.ankle < 0) {
     flags.push("weak_tibial_progression_or_push_off");
   }
 
-  if (ranked.bestPhase === "swingClearance" && metrics.knee < 30) {
+  if (ranked.bestPhase === "swingClearance" && metrics.knee < 20) {
     flags.push("insufficient_knee_flexion_in_swing");
   }
 
-  if (ranked.bestPhase === "loadingResponse" && metrics.ankle < -10) {
+  if (ranked.bestPhase === "loadingResponse" && metrics.ankle < -15) {
     flags.push("forefoot_or_plantarflexed_contact");
   }
 
@@ -286,18 +293,18 @@ function analyzeSequencePathology(candidates) {
     return {
       isPathological: false,
       pathologyScore: 0,
+      reliabilityScore: 0,
       confidence: 0,
       reasons: ["no_candidates"],
       enriched: [],
+      phaseReliability: "low",
     };
   }
-
-  let pathologyScore = 0;
-  const reasons = [];
 
   const enriched = candidates.map((c) => {
     const ranked = rankPhases(c.metrics);
     const frameFlags = detectFrameLevelPathology(c.metrics, ranked);
+
     return {
       ...c,
       ranked,
@@ -307,21 +314,47 @@ function analyzeSequencePathology(candidates) {
     };
   });
 
-  const poorFitCount = enriched.filter((e) => e.frameFlags.includes("poor_phase_fit")).length;
-  const ambiguousCount = enriched.filter((e) => e.frameFlags.includes("phase_ambiguity")).length;
-  const extremeCount = enriched.filter((e) => e.frameFlags.length >= 2).length;
+  let pathologyScore = 0;
+  let reliabilityPenalty = 0;
+  const reasons = [];
 
-  if (poorFitCount >= Math.ceil(enriched.length * 0.35)) {
-    pathologyScore += 2;
+  const poorFitCount = enriched.filter((e) =>
+    e.frameFlags.includes("poor_phase_fit")
+  ).length;
+
+  const ambiguousCount = enriched.filter((e) =>
+    e.frameFlags.includes("phase_ambiguity")
+  ).length;
+
+  const mechanicalExtremeCount = enriched.filter((e) =>
+    e.frameFlags.some((f) =>
+      [
+        "excessive_knee_flexion",
+        "possible_knee_hyperextension_pattern",
+        "marked_plantarflexion",
+        "marked_dorsiflexion",
+        "low_toe_clearance",
+        "marked_foot_progression_deviation",
+        "weak_tibial_progression_or_push_off",
+        "insufficient_knee_flexion_in_swing",
+        "forefoot_or_plantarflexed_contact",
+      ].includes(f)
+    )
+  ).length;
+
+  // Это больше про ненадёжность фаз, а не про патологию
+  if (poorFitCount >= Math.ceil(enriched.length * 0.5)) {
+    reliabilityPenalty += 2;
     reasons.push("many_frames_fit_no_normal_phase_well");
   }
 
-  if (ambiguousCount >= Math.ceil(enriched.length * 0.35)) {
-    pathologyScore += 1;
+  if (ambiguousCount >= Math.ceil(enriched.length * 0.45)) {
+    reliabilityPenalty += 1;
     reasons.push("phase_assignment_is_ambiguous");
   }
 
-  if (extremeCount >= Math.ceil(enriched.length * 0.25)) {
+  // Реальные грубые биомеханические отклонения
+  if (mechanicalExtremeCount >= Math.ceil(enriched.length * 0.3)) {
     pathologyScore += 2;
     reasons.push("multiple_frames_have_extreme_deviations");
   }
@@ -330,37 +363,61 @@ function analyzeSequencePathology(candidates) {
   for (let i = 1; i < enriched.length; i++) {
     const prev = enriched[i - 1].phaseIndex;
     const curr = enriched[i].phaseIndex;
+
     if (curr + 1 < prev) backwardsJumps += 1;
   }
 
-  if (backwardsJumps >= 2) {
-    pathologyScore += 2;
+  if (backwardsJumps >= 4) {
+    reliabilityPenalty += 1;
     reasons.push("phase_progression_is_inconsistent");
   }
 
   const kneeValues = enriched.map((e) => e.metrics.knee);
   const ankleValues = enriched.map((e) => e.metrics.ankle);
+  const toeValues = enriched.map((e) => e.metrics.toeClearance);
+
   const range = (arr) => Math.max(...arr) - Math.min(...arr);
 
-  if (range(kneeValues) > 85) {
+  if (range(kneeValues) > 95) {
     pathologyScore += 1;
     reasons.push("knee_motion_is_highly_irregular");
   }
 
-  if (range(ankleValues) > 45) {
+  if (range(ankleValues) > 55) {
     pathologyScore += 1;
     reasons.push("ankle_motion_is_highly_irregular");
   }
 
+  if (Math.min(...toeValues) < 0) {
+    pathologyScore += 1;
+    reasons.push("toe_clearance_drops_below_zero");
+  }
+
+  const meanConfidence =
+    enriched.reduce((sum, e) => sum + (e.ranked?.confidence ?? 0), 0) /
+    enriched.length;
+
+  let phaseReliability = "high";
+  if (reliabilityPenalty >= 3 || meanConfidence < 0.12) phaseReliability = "low";
+  else if (reliabilityPenalty >= 1 || meanConfidence < 0.22) phaseReliability = "medium";
+
+  // Главное: плохая фазовая определимость != патологическая походка
   const isPathological = pathologyScore >= 3;
-  const confidence = clamp(pathologyScore / 6, 0, 1);
+
+  const confidence = clamp(
+    0.55 * (pathologyScore / 4) + 0.45 * (1 - Math.min(reliabilityPenalty / 4, 1)),
+    0,
+    1
+  );
 
   return {
     isPathological,
     pathologyScore,
+    reliabilityScore: reliabilityPenalty,
     confidence,
     reasons,
     enriched,
+    phaseReliability,
   };
 }
 
@@ -382,13 +439,16 @@ function footAssessment(metrics, phaseKey) {
   return `Стопа: опорная стабильность / ориентация к линии шага ≈ ${metrics.footProgression.toFixed(0)}°`;
 }
 
-function makeText(metrics, phaseKey, side, isPathological = false, frameFlags = [], ranked = null) {
+function makeText(metrics, phaseKey, side, pathologySummary = null, frameFlags = [], ranked = null) {
   const ref = PHASES[phaseKey].norm;
 
   let summary = "Паттерн ближе к нормотипичной интерпретации.";
-  if (isPathological) {
-    summary = "Походка выглядит атипичной; фазовая разметка может быть ненадёжной.";
-  } else if (ranked && ranked.confidence < 0.18) {
+
+  if (pathologySummary?.isPathological) {
+    summary = "Есть признаки атипичной биомеханики; фазовая разметка может быть ограниченно надёжной.";
+  } else if (pathologySummary?.phaseReliability === "low") {
+    summary = "Фазовая разметка ненадёжна: кадр плохо укладывается в типичный цикл, но это ещё не значит, что походка патологическая.";
+  } else if (ranked && ranked.confidence < 0.1) {
     summary = "Кадр неоднозначен: он плохо отделяется от соседних фаз.";
   }
 
@@ -694,11 +754,13 @@ export default function App() {
     setFrames(selected);
 
         setSelectedFrame(0);
-    setStatus(
-      pathology.isPathological
-        ? "Анализ завершён: вероятна атипичная / патологическая походка"
-        : "Анализ завершён"
-    );
+setStatus(
+  pathology.isPathological
+    ? "Анализ завершён: есть признаки атипичной биомеханики"
+    : pathology.phaseReliability === "low"
+    ? "Анализ завершён: фазы определяются ненадёжно"
+    : "Анализ завершён"
+);
 
     if (selected.length) {
       await showFrame(selected[0]);
