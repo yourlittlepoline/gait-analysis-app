@@ -9,7 +9,6 @@ const LANDMARKS = {
   leftKnee: 25,
   leftAnkle: 27,
   leftHeel: 29,
-  rightHeel: 30,
   leftFootIndex: 31,
 };
 
@@ -53,14 +52,6 @@ function averagePoint(points) {
   };
 }
 
-function estimatePhase(metrics) {
-  const { knee, ankle, heelAhead } = metrics;
-  if (heelAhead > 16 && knee < 20) return "1";
-  if (heelAhead > 8 && knee >= 10 && knee <= 25) return "2";
-  if (ankle >= 6 && knee < 12) return "3";
-  return "4";
-}
-
 function extractMetrics(landmarks, width, height) {
   const leftShoulder = getPoint(landmarks, LANDMARKS.leftShoulder, width, height);
   const rightShoulder = getPoint(landmarks, LANDMARKS.rightShoulder, width, height);
@@ -69,7 +60,6 @@ function extractMetrics(landmarks, width, height) {
   const leftKnee = getPoint(landmarks, LANDMARKS.leftKnee, width, height);
   const leftAnkle = getPoint(landmarks, LANDMARKS.leftAnkle, width, height);
   const leftHeel = getPoint(landmarks, LANDMARKS.leftHeel, width, height);
-  const rightHeel = getPoint(landmarks, LANDMARKS.rightHeel, width, height);
   const leftFootIndex = getPoint(landmarks, LANDMARKS.leftFootIndex, width, height);
 
   const shoulderCenter = averagePoint([leftShoulder, rightShoulder]);
@@ -81,11 +71,10 @@ function extractMetrics(landmarks, width, height) {
   const rawAnkle = angle3(leftKnee, leftAnkle, leftFootIndex) ?? 90;
   const ankle = 90 - rawAnkle;
   const trunk = shoulderCenter && pelvisCenter ? signedAngleToVertical(shoulderCenter, pelvisCenter) ?? 0 : 0;
-  const heelAhead = leftHeel && rightHeel ? leftHeel.x - rightHeel.x : 0;
 
   return {
-    points: { leftShoulder, leftHip, leftKnee, leftAnkle, leftFootIndex },
-    metrics: { hip, knee, ankle, trunk, heelAhead },
+    points: { leftShoulder, leftHip, leftKnee, leftAnkle, leftFootIndex, leftHeel },
+    metrics: { hip, knee, ankle, trunk },
   };
 }
 
@@ -97,26 +86,19 @@ function qualityScore(result, width, height) {
   const ys = pts.map((p) => p.y);
   const bodyHeight = Math.max(...ys) - Math.min(...ys);
   const centerX = xs.reduce((a, b) => a + b, 0) / xs.length;
-  let score = 60;
-  if (bodyHeight > height * 0.35) score += 20;
-  if (centerX > width * 0.15 && centerX < width * 0.85) score += 20;
+  let score = 0;
+  if (bodyHeight > height * 0.35) score += 40;
+  if (centerX > width * 0.12 && centerX < width * 0.88) score += 30;
+  if (pts.length >= 5) score += 30;
   return score;
 }
 
 function comments(metrics) {
-  const out = [];
-  if (Math.abs(metrics.hip) > 20) out.push("Таз/бедро: отклонение");
-  else out.push("Таз: близко к нейтрали");
-
-  if (metrics.knee > 25) out.push("Колено: больше сгибания");
-  else if (metrics.knee < 5) out.push("Колено: мало сгибания");
-  else out.push("Колено: умеренно");
-
-  if (metrics.ankle < -5) out.push("Голеностоп: мало тыльного сгибания");
-  else if (metrics.ankle > 10) out.push("Голеностоп: много тыльного сгибания");
-  else out.push("Голеностоп: умеренно");
-
-  return out;
+  return [
+    `Таз: ${metrics.hip.toFixed(0)}°`,
+    `Колено: ${metrics.knee.toFixed(0)}°`,
+    `Голеностоп: ${metrics.ankle.toFixed(0)}°`,
+  ];
 }
 
 async function loadPoseLandmarker() {
@@ -152,7 +134,7 @@ function FrameCard({ frame, isActive, onClick }) {
         cursor: "pointer",
       }}
     >
-      {frame.phase}
+      {frame.step}
     </button>
   );
 }
@@ -203,7 +185,9 @@ export default function App() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    const p = frame.points;
+    const extracted = extractMetrics(frame.landmarks, canvas.width, canvas.height);
+    const p = extracted.points;
+
     const line = (a, b) => {
       if (!a || !b) return;
       ctx.beginPath();
@@ -240,10 +224,14 @@ export default function App() {
     const model = await ensureModel();
     const width = video.videoWidth || 720;
     const height = video.videoHeight || 1280;
-    const times = [0.12, 0.28, 0.44, 0.6, 0.76].map((p) => Math.min((video.duration || 1) * p, Math.max((video.duration || 1) - 0.2, 0)));
-    const best = [];
 
-    for (const time of times) {
+    const checkpoints = [0.08, 0.16, 0.24, 0.32, 0.40, 0.48, 0.56, 0.64, 0.72, 0.80, 0.88].map((p) =>
+      Math.min((video.duration || 1) * p, Math.max((video.duration || 1) - 0.2, 0))
+    );
+
+    const candidates = [];
+
+    for (const time of checkpoints) {
       await new Promise((resolve) => {
         const done = () => {
           video.removeEventListener("seeked", done);
@@ -256,26 +244,74 @@ export default function App() {
       const result = model.detectForVideo(video, performance.now());
       const landmarks = result?.landmarks?.[0];
       if (!landmarks) continue;
+
       const extracted = extractMetrics(landmarks, width, height);
       const score = qualityScore(extracted, width, height);
       if (score < 70) continue;
 
-      best.push({
-        phase: estimatePhase(extracted.metrics),
+      candidates.push({
+        step: "",
         metrics: extracted.metrics,
-        points: extracted.points,
+        landmarks,
         comments: comments(extracted.metrics),
         time,
+        score,
       });
     }
 
-    if (!best.length) {
+    if (candidates.length < 2) {
       setError("Не удалось выделить хорошие кадры");
       setStatus("Попробуйте видео, где человек целиком в кадре");
       return;
     }
 
-    const limited = best.slice(0, 4).map((f, i) => ({ ...f, phase: String(i + 1) }));
+    const sortedByTime = [...candidates].sort((a, b) => a.time - b.time);
+
+    const first = sortedByTime[0];
+    let maxKnee = sortedByTime[0];
+    let minKnee = sortedByTime[0];
+    let maxHip = sortedByTime[0];
+
+    for (const frame of sortedByTime) {
+      if (frame.metrics.knee > maxKnee.metrics.knee) maxKnee = frame;
+      if (frame.metrics.knee < minKnee.metrics.knee) minKnee = frame;
+      if (frame.metrics.hip > maxHip.metrics.hip) maxHip = frame;
+    }
+
+    const picked = [];
+    const addUnique = (frame) => {
+      if (!frame) return;
+      const exists = picked.some((item) => Math.abs(item.time - frame.time) < 0.08);
+      if (!exists) picked.push(frame);
+    };
+
+    addUnique(first);
+    addUnique(minKnee);
+    addUnique(maxKnee);
+    addUnique(maxHip);
+
+    if (picked.length < 4) {
+      const byVariation = [...sortedByTime]
+        .sort((a, b) => {
+          const va = Math.abs(a.metrics.knee) + Math.abs(a.metrics.hip) + Math.abs(a.metrics.ankle);
+          const vb = Math.abs(b.metrics.knee) + Math.abs(b.metrics.hip) + Math.abs(b.metrics.ankle);
+          return vb - va;
+        });
+
+      for (const frame of byVariation) {
+        addUnique(frame);
+        if (picked.length >= 4) break;
+      }
+    }
+
+    const limited = picked
+      .sort((a, b) => a.time - b.time)
+      .slice(0, 4)
+      .map((f, i) => ({
+        ...f,
+        step: String(i + 1),
+      }));
+
     setFrames(limited);
     setSelectedFrame(0);
     setStatus("Готово");
@@ -376,6 +412,8 @@ export default function App() {
             </div>
 
             <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 24, padding: 16, display: "grid", gap: 12 }}>
+              <div style={{ fontWeight: 700 }}>Кадр</div>
+              <div>{currentFrame?.step}</div>
               <div style={{ fontWeight: 700 }}>Таз</div>
               <div>{currentFrame?.comments?.[0]}</div>
               <div style={{ fontWeight: 700 }}>Колено</div>
