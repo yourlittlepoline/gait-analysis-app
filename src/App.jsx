@@ -39,6 +39,13 @@ const PHASES = {
   },
 };
 
+const PHASE_ORDER = {
+  loadingResponse: 0,
+  midStance: 1,
+  terminalStance: 2,
+  swingClearance: 3,
+};
+
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
@@ -85,15 +92,6 @@ function getPoint(landmarks, idx, width, height) {
   };
 }
 
-function averagePoint(points) {
-  const valid = points.filter(Boolean);
-  if (!valid.length) return null;
-  return {
-    x: valid.reduce((s, p) => s + p.x, 0) / valid.length,
-    y: valid.reduce((s, p) => s + p.y, 0) / valid.length,
-  };
-}
-
 function extractLeg(landmarks, side, width, height) {
   const shoulder = getPoint(landmarks, side === "left" ? LANDMARKS.leftShoulder : LANDMARKS.rightShoulder, width, height);
   const hip = getPoint(landmarks, side === "left" ? LANDMARKS.leftHip : LANDMARKS.rightHip, width, height);
@@ -101,6 +99,7 @@ function extractLeg(landmarks, side, width, height) {
   const ankle = getPoint(landmarks, side === "left" ? LANDMARKS.leftAnkle : LANDMARKS.rightAnkle, width, height);
   const heel = getPoint(landmarks, side === "left" ? LANDMARKS.leftHeel : LANDMARKS.rightHeel, width, height);
   const toe = getPoint(landmarks, side === "left" ? LANDMARKS.leftFootIndex : LANDMARKS.rightFootIndex, width, height);
+
   const footPoint = heel && toe
     ? { x: (heel.x + toe.x) / 2, y: (heel.y + toe.y) / 2, z: ((heel.z ?? 0) + (toe.z ?? 0)) / 2 }
     : toe || heel;
@@ -110,6 +109,7 @@ function extractLeg(landmarks, side, width, height) {
   const rawAnkle = angle3(knee, ankle, footPoint) ?? 90;
   const ankleAngle = 90 - rawAnkle;
   const hipAngle = signedAngleToVertical(hip, knee) ?? 0;
+  const shankAngle = signedAngleToVertical(knee, ankle) ?? 0;
   const legSize = distance(hip, knee) + distance(knee, ankle) + distance(ankle, footPoint);
   const toeClearance = toe ? ankle.y - toe.y : 0;
   const depthPoints = [hip, knee, ankle, heel, toe].filter(Boolean);
@@ -122,6 +122,7 @@ function extractLeg(landmarks, side, width, height) {
       hip: hipAngle,
       knee: kneeFlexion,
       ankle: ankleAngle,
+      shankAngle,
       toeClearance,
       legSize,
       meanZ,
@@ -229,6 +230,140 @@ function phaseScore(metrics, phaseKey) {
   return 999;
 }
 
+function rankPhases(metrics) {
+  const ranked = Object.keys(PHASES)
+    .map((phaseKey) => ({
+      phaseKey,
+      cost: phaseScore(metrics, phaseKey),
+    }))
+    .sort((a, b) => a.cost - b.cost);
+
+  const best = ranked[0];
+  const second = ranked[1];
+  const confidenceGap = second.cost - best.cost;
+  const confidence = clamp(confidenceGap / 20, 0, 1);
+
+  return {
+    bestPhase: best.phaseKey,
+    bestCost: best.cost,
+    secondPhase: second.phaseKey,
+    secondCost: second.cost,
+    confidence,
+    ranked,
+  };
+}
+
+function detectFrameLevelPathology(metrics, ranked) {
+  const flags = [];
+
+  if (ranked.bestCost > 35) flags.push("poor_phase_fit");
+  if (ranked.confidence < 0.18) flags.push("phase_ambiguity");
+
+  if (metrics.knee > 75) flags.push("excessive_knee_flexion");
+  if (metrics.knee < 2 && metrics.shankAngle > 10) flags.push("possible_knee_hyperextension_pattern");
+  if (metrics.ankle < -15) flags.push("marked_plantarflexion");
+  if (metrics.ankle > 25) flags.push("marked_dorsiflexion");
+  if (metrics.toeClearance < 6) flags.push("low_toe_clearance");
+  if (Math.abs(metrics.footProgression) > 20) flags.push("marked_foot_progression_deviation");
+
+  if (ranked.bestPhase === "terminalStance" && metrics.ankle < 3) {
+    flags.push("weak_tibial_progression_or_push_off");
+  }
+
+  if (ranked.bestPhase === "swingClearance" && metrics.knee < 30) {
+    flags.push("insufficient_knee_flexion_in_swing");
+  }
+
+  if (ranked.bestPhase === "loadingResponse" && metrics.ankle < -10) {
+    flags.push("forefoot_or_plantarflexed_contact");
+  }
+
+  return flags;
+}
+
+function analyzeSequencePathology(candidates) {
+  if (!candidates.length) {
+    return {
+      isPathological: false,
+      pathologyScore: 0,
+      confidence: 0,
+      reasons: ["no_candidates"],
+      enriched: [],
+    };
+  }
+
+  let pathologyScore = 0;
+  const reasons = [];
+
+  const enriched = candidates.map((c) => {
+    const ranked = rankPhases(c.metrics);
+    const frameFlags = detectFrameLevelPathology(c.metrics, ranked);
+    return {
+      ...c,
+      ranked,
+      frameFlags,
+      assignedPhase: ranked.bestPhase,
+      phaseIndex: PHASE_ORDER[ranked.bestPhase],
+    };
+  });
+
+  const poorFitCount = enriched.filter((e) => e.frameFlags.includes("poor_phase_fit")).length;
+  const ambiguousCount = enriched.filter((e) => e.frameFlags.includes("phase_ambiguity")).length;
+  const extremeCount = enriched.filter((e) => e.frameFlags.length >= 2).length;
+
+  if (poorFitCount >= Math.ceil(enriched.length * 0.35)) {
+    pathologyScore += 2;
+    reasons.push("many_frames_fit_no_normal_phase_well");
+  }
+
+  if (ambiguousCount >= Math.ceil(enriched.length * 0.35)) {
+    pathologyScore += 1;
+    reasons.push("phase_assignment_is_ambiguous");
+  }
+
+  if (extremeCount >= Math.ceil(enriched.length * 0.25)) {
+    pathologyScore += 2;
+    reasons.push("multiple_frames_have_extreme_deviations");
+  }
+
+  let backwardsJumps = 0;
+  for (let i = 1; i < enriched.length; i++) {
+    const prev = enriched[i - 1].phaseIndex;
+    const curr = enriched[i].phaseIndex;
+    if (curr + 1 < prev) backwardsJumps += 1;
+  }
+
+  if (backwardsJumps >= 2) {
+    pathologyScore += 2;
+    reasons.push("phase_progression_is_inconsistent");
+  }
+
+  const kneeValues = enriched.map((e) => e.metrics.knee);
+  const ankleValues = enriched.map((e) => e.metrics.ankle);
+  const range = (arr) => Math.max(...arr) - Math.min(...arr);
+
+  if (range(kneeValues) > 85) {
+    pathologyScore += 1;
+    reasons.push("knee_motion_is_highly_irregular");
+  }
+
+  if (range(ankleValues) > 45) {
+    pathologyScore += 1;
+    reasons.push("ankle_motion_is_highly_irregular");
+  }
+
+  const isPathological = pathologyScore >= 3;
+  const confidence = clamp(pathologyScore / 6, 0, 1);
+
+  return {
+    isPathological,
+    pathologyScore,
+    confidence,
+    reasons,
+    enriched,
+  };
+}
+
 function footAssessment(metrics, phaseKey) {
   if (phaseKey === "swingClearance") {
     if (metrics.toeClearance < 8) return `Стопа: низкий clearance, риск зацепа · clearance ≈ ${metrics.toeClearance.toFixed(0)} px`;
@@ -247,12 +382,33 @@ function footAssessment(metrics, phaseKey) {
   return `Стопа: опорная стабильность / ориентация к линии шага ≈ ${metrics.footProgression.toFixed(0)}°`;
 }
 
-function makeText(metrics, phaseKey, side) {
+function makeText(metrics, phaseKey, side, isPathological = false, frameFlags = [], ranked = null) {
   const ref = PHASES[phaseKey].norm;
+
+  let summary = "Паттерн ближе к нормотипичной интерпретации.";
+  if (isPathological) {
+    summary = "Походка выглядит атипичной; фазовая разметка может быть ненадёжной.";
+  } else if (ranked && ranked.confidence < 0.18) {
+    summary = "Кадр неоднозначен: он плохо отделяется от соседних фаз.";
+  }
+
+  const warnings = [];
+  if (frameFlags.includes("marked_plantarflexion")) warnings.push("выраженная подошвенная установка стопы");
+  if (frameFlags.includes("forefoot_or_plantarflexed_contact")) warnings.push("контакт больше похож на передний отдел / plantarflexed contact");
+  if (frameFlags.includes("low_toe_clearance")) warnings.push("низкий clearance");
+  if (frameFlags.includes("marked_foot_progression_deviation")) warnings.push("выраженное отклонение угла шага");
+  if (frameFlags.includes("insufficient_knee_flexion_in_swing")) warnings.push("недостаточное сгибание колена в переносе");
+  if (frameFlags.includes("weak_tibial_progression_or_push_off")) warnings.push("слабая tibial progression / push-off");
+  if (frameFlags.includes("possible_knee_hyperextension_pattern")) warnings.push("возможный recurvatum / нестабильность колена");
+  if (frameFlags.includes("poor_phase_fit")) warnings.push("кадр плохо укладывается в нормальные фазы");
+  if (frameFlags.includes("phase_ambiguity")) warnings.push("фаза определяется неоднозначно");
+
   return {
     phaseTitle: PHASES[phaseKey].title,
     focus: PHASES[phaseKey].focus,
     side: side === "left" ? "левая (ближняя)" : "правая (ближняя)",
+    summary,
+    warnings: warnings.length ? warnings.join(", ") : "грубых предупреждений нет",
     hip: `Таз: видео ≈ ${metrics.hip.toFixed(0)}°, норма ${ref.hip}°`,
     knee: `Колено: видео ≈ ${metrics.knee.toFixed(0)}°, норма ${ref.knee}°`,
     ankle: `Голеностоп: видео ≈ ${metrics.ankle.toFixed(0)}°, норма ${ref.ankle}°`,
@@ -312,6 +468,7 @@ export default function App() {
   const [frames, setFrames] = useState([]);
   const [selectedFrame, setSelectedFrame] = useState(0);
   const [progression, setProgression] = useState(null);
+  const [pathologySummary, setPathologySummary] = useState(null);
 
   const currentFrame = frames[selectedFrame] || null;
 
@@ -369,12 +526,7 @@ export default function App() {
     };
 
     if (progression?.start && progression?.end) {
-      line(
-        progression.start,
-        progression.end,
-        "#ef4444",
-        2
-      );
+      line(progression.start, progression.end, "#ef4444", 2);
     }
 
     line(p.shoulder, p.hip);
@@ -392,10 +544,16 @@ export default function App() {
     if (p.knee) ctx.fillText(`голень ${Math.max(0, frame.metrics.shankAngle).toFixed(0)}°`, p.knee.x + 12, p.knee.y + 18);
 
     ctx.fillStyle = "rgba(2, 6, 23, 0.8)";
-    ctx.fillRect(12, 12, 250, 44);
+    ctx.fillRect(12, 12, 320, 48);
     ctx.fillStyle = "white";
     ctx.font = "700 14px sans-serif";
-    ctx.fillText(`Фаза: ${frame.text.phaseTitle}`, 22, 40);
+    ctx.fillText(`Фаза: ${frame.text.phaseTitle}`, 22, 32);
+    ctx.font = "600 12px sans-serif";
+    ctx.fillText(
+      pathologySummary?.isPathological ? "Атипичная походка вероятна" : "Фазовая оценка допустима",
+      22,
+      50
+    );
   }
 
   async function showFrame(frame) {
@@ -424,6 +582,7 @@ export default function App() {
 
     setError("");
     setStatus("Идёт анализ...");
+    setPathologySummary(null);
 
     const model = await ensureModel();
     const width = video.videoWidth || 720;
@@ -481,21 +640,45 @@ export default function App() {
         metrics: {
           ...item.metrics,
           footProgression,
+          shankAngle: signedAngleToVertical(item.points.knee, item.points.ankle) ?? 0,
         },
       };
     });
 
+    const pathology = analyzeSequencePathology(candidates);
+    setPathologySummary(pathology);
+
     const usedTimes = [];
     const takeBestForPhase = (phaseKey) => {
       const sorted = [...candidates]
-        .map((c) => ({ ...c, phaseCost: phaseScore(c.metrics, phaseKey) }))
+        .map((c) => {
+          const ranked = rankPhases(c.metrics);
+          const frameFlags = detectFrameLevelPathology(c.metrics, ranked);
+          return {
+            ...c,
+            ranked,
+            frameFlags,
+            phaseCost: phaseScore(c.metrics, phaseKey),
+          };
+        })
         .sort((a, b) => a.phaseCost - b.phaseCost);
 
-      const chosen = sorted.find((item) => !usedTimes.some((t) => Math.abs(t - item.time) < 0.08)) || sorted[0];
+      const chosen =
+        sorted.find((item) => !usedTimes.some((t) => Math.abs(t - item.time) < 0.08)) || sorted[0];
+
       usedTimes.push(chosen.time);
+
       return {
         ...chosen,
-        text: makeText(chosen.metrics, phaseKey, chosen.side),
+        targetPhase: phaseKey,
+        text: makeText(
+          chosen.metrics,
+          phaseKey,
+          chosen.side,
+          pathology.isPathological,
+          chosen.frameFlags,
+          chosen.ranked
+        ),
       };
     };
 
@@ -509,128 +692,399 @@ export default function App() {
       .map((f, i) => ({ ...f, step: String(i + 1) }));
 
     setFrames(selected);
-    setSelectedFrame(0);
-    setStatus("Готово");
 
-    setTimeout(() => {
-      if (selected[0]) drawCurrent(selected[0]);
-    }, 60);
-  }
+        setSelectedFrame(0);
+    setStatus(
+      pathology.isPathological
+        ? "Анализ завершён: вероятна атипичная / патологическая походка"
+        : "Анализ завершён"
+    );
 
-  function onLoadedMetadata() {
-    setIsReady(true);
-    setStatus("Видео загружено");
-  }
-
-  function onUpload(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    if (videoUrl?.startsWith("blob:")) URL.revokeObjectURL(videoUrl);
-    const url = URL.createObjectURL(file);
-    setVideoUrl(url);
-    setFrames([]);
-    setSelectedFrame(0);
-    setProgression(null);
-    setError("");
-    setStatus("Видео загружается...");
-    setTimeout(() => videoRef.current?.load(), 50);
+    if (selected.length) {
+      await showFrame(selected[0]);
+    }
   }
 
   useEffect(() => {
     if (currentFrame) {
       showFrame(currentFrame);
     }
-  }, [currentFrame]);
+  }, [selectedFrame, progression]);
 
   return (
-    <div style={{ minHeight: "100vh", background: "#020617", color: "white", padding: 16, fontFamily: "Inter, system-ui, sans-serif" }}>
-      <div style={{ maxWidth: 520, margin: "0 auto", display: "grid", gap: 16 }}>
-        {!frames.length ? (
-          <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 24, padding: 20, display: "grid", gap: 16 }}>
-            <div style={{ fontSize: 28, fontWeight: 700 }}>Анализ походки</div>
+    <div
+      style={{
+        minHeight: "100vh",
+        background: "#020617",
+        color: "white",
+        padding: 24,
+        fontFamily:
+          'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      }}
+    >
+      <div style={{ maxWidth: 1280, margin: "0 auto" }}>
+        <div style={{ marginBottom: 24 }}>
+          <h1 style={{ fontSize: 32, fontWeight: 800, marginBottom: 8 }}>
+            Анализ походки
+          </h1>
+          <p style={{ color: "#94a3b8", fontSize: 16, lineHeight: 1.5 }}>
+            Загрузите видео с сагиттальным видом. Алгоритм отслеживает ближнюю
+            ногу, оценивает фазоподобные кадры и дополнительно проверяет,
+            похожа ли последовательность на патологическую / атипичную походку.
+          </p>
+        </div>
 
-            <label style={{ border: "1px dashed #334155", borderRadius: 18, padding: 16, display: "grid", gap: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#cbd5e1" }}>
-                <Upload size={18} /> Загрузка видео
-              </div>
-              <input type="file" accept="video/*" onChange={onUpload} />
-            </label>
-
-            <div style={{ display: "flex", alignItems: "center", gap: 8, color: isReady ? "#86efac" : "#cbd5e1" }}>
-              <CheckCircle2 size={18} /> {status}
-            </div>
-
-            <button
-              onClick={analyze}
-              disabled={!videoUrl || isLoadingModel}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(320px, 1.4fr) minmax(320px, 0.9fr)",
+            gap: 24,
+            alignItems: "start",
+          }}
+        >
+          <div
+            style={{
+              background: "#0f172a",
+              border: "1px solid #1e293b",
+              borderRadius: 24,
+              padding: 20,
+            }}
+          >
+            <label
               style={{
-                background: "white",
-                color: "#020617",
-                border: 0,
-                borderRadius: 16,
-                padding: "14px 16px",
-                fontWeight: 700,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 12,
+                border: "1.5px dashed #334155",
+                borderRadius: 20,
+                padding: 18,
+                marginBottom: 16,
                 cursor: "pointer",
-                opacity: !videoUrl || isLoadingModel ? 0.5 : 1,
+                background: "#020617",
               }}
             >
-              Начать анализ
-            </button>
+              <Upload size={20} />
+              <span>Загрузить видео</span>
+              <input
+                type="file"
+                accept="video/*"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
 
-            <video
-              ref={videoRef}
-              src={videoUrl}
-              playsInline
-              muted
-              preload="metadata"
-              onLoadedMetadata={onLoadedMetadata}
-              style={{ display: "none" }}
-            />
-          </div>
-        ) : (
-          <div style={{ display: "grid", gap: 16 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
-              {frames.map((frame, idx) => (
-                <FrameCard key={idx} frame={frame} isActive={idx === selectedFrame} onClick={() => setSelectedFrame(idx)} />
-              ))}
+                  setError("");
+                  setFrames([]);
+                  setSelectedFrame(0);
+                  setProgression(null);
+                  setPathologySummary(null);
+                  setStatus("Видео загружено");
+
+                  setVideoUrl((prev) => {
+                    if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+                    return URL.createObjectURL(file);
+                  });
+                }}
+              />
+            </label>
+
+            <div
+              style={{
+                position: "relative",
+                width: "100%",
+                aspectRatio: "9 / 16",
+                background: "#000",
+                borderRadius: 20,
+                overflow: "hidden",
+                border: "1px solid #1e293b",
+              }}
+            >
+              {videoUrl ? (
+                <>
+                  <video
+                    ref={videoRef}
+                    src={videoUrl}
+                    playsInline
+                    preload="auto"
+                    controls
+                    onLoadedData={() => {
+                      setIsReady(true);
+                      setStatus("Видео готово к анализу");
+                    }}
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "contain",
+                      display: "block",
+                    }}
+                  />
+                  <canvas
+                    ref={canvasRef}
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      width: "100%",
+                      height: "100%",
+                      pointerEvents: "none",
+                    }}
+                  />
+                </>
+              ) : (
+                <div
+                  style={{
+                    position: "absolute",
+                    inset: 0,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "#64748b",
+                    textAlign: "center",
+                    padding: 24,
+                  }}
+                >
+                  Сначала загрузите видео
+                </div>
+              )}
             </div>
 
-            <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 24, overflow: "hidden" }}>
-              <div style={{ position: "relative", width: "100%" }}>
-                <video
-                  ref={videoRef}
-                  src={videoUrl}
-                  playsInline
-                  muted
-                  preload="metadata"
-                  controls
-                  style={{ width: "100%", display: "block" }}
-                />
-                <canvas ref={canvasRef} style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} />
+            <div
+              style={{
+                display: "flex",
+                gap: 12,
+                marginTop: 16,
+                flexWrap: "wrap",
+              }}
+            >
+              <button
+                onClick={analyze}
+                disabled={!videoUrl || !isReady || isLoadingModel}
+                style={{
+                  background: !videoUrl || !isReady || isLoadingModel ? "#334155" : "#2563eb",
+                  color: "white",
+                  border: "none",
+                  borderRadius: 16,
+                  padding: "12px 18px",
+                  fontWeight: 700,
+                  cursor:
+                    !videoUrl || !isReady || isLoadingModel ? "not-allowed" : "pointer",
+                }}
+              >
+                {isLoadingModel ? "Загрузка модели..." : "Запустить анализ"}
+              </button>
+
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  color: "#cbd5e1",
+                  fontSize: 14,
+                }}
+              >
+                <CheckCircle2 size={16} />
+                <span>{status}</span>
               </div>
             </div>
 
-            <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 24, padding: 16, display: "grid", gap: 12 }}>
-              <div style={{ fontWeight: 700 }}>Фаза</div>
-              <div>{currentFrame?.text?.phaseTitle}</div>
-              <div style={{ color: "#94a3b8" }}>{currentFrame?.text?.focus}</div>
-              <div style={{ fontWeight: 700 }}>Нога</div>
-              <div>{currentFrame?.text?.side}</div>
-              <div style={{ fontWeight: 700 }}>Таз</div>
-              <div>{currentFrame?.text?.hip}</div>
-              <div style={{ fontWeight: 700 }}>Колено</div>
-              <div>{currentFrame?.text?.knee}</div>
-              <div style={{ fontWeight: 700 }}>Голеностоп</div>
-              <div>{currentFrame?.text?.ankle}</div>
-              <div style={{ fontWeight: 700 }}>Голень</div>
-              <div>{currentFrame?.text?.shank}</div>
-              <div style={{ fontWeight: 700 }}>Стопа</div>
-              <div>{currentFrame?.text?.foot}</div>
+            {error ? (
+              <div
+                style={{
+                  marginTop: 14,
+                  background: "rgba(239,68,68,0.12)",
+                  color: "#fecaca",
+                  border: "1px solid rgba(239,68,68,0.3)",
+                  padding: 12,
+                  borderRadius: 14,
+                }}
+              >
+                {error}
+              </div>
+            ) : null}
+          </div>
+
+          <div style={{ display: "grid", gap: 16 }}>
+            <div
+              style={{
+                background: "#0f172a",
+                border: "1px solid #1e293b",
+                borderRadius: 24,
+                padding: 20,
+              }}
+            >
+              <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 12 }}>
+                Сводка
+              </h2>
+
+              {pathologySummary ? (
+                <div style={{ display: "grid", gap: 12 }}>
+                  <div
+                    style={{
+                      borderRadius: 16,
+                      padding: 14,
+                      background: pathologySummary.isPathological
+                        ? "rgba(245, 158, 11, 0.14)"
+                        : "rgba(34, 197, 94, 0.14)",
+                      border: pathologySummary.isPathological
+                        ? "1px solid rgba(245, 158, 11, 0.35)"
+                        : "1px solid rgba(34, 197, 94, 0.35)",
+                    }}
+                  >
+                    <div style={{ fontWeight: 800, marginBottom: 6 }}>
+                      {pathologySummary.isPathological
+                        ? "Вероятна атипичная / патологическая походка"
+                        : "Грубых признаков патологической походки не найдено"}
+                    </div>
+                    <div style={{ color: "#cbd5e1", fontSize: 14, lineHeight: 1.5 }}>
+                      Индекс патологии: {pathologySummary.pathologyScore} · уверенность{" "}
+                      {(pathologySummary.confidence * 100).toFixed(0)}%
+                    </div>
+                  </div>
+
+                  <div>
+                    <div
+                      style={{
+                        fontWeight: 700,
+                        marginBottom: 8,
+                        color: "#e2e8f0",
+                      }}
+                    >
+                      Причины
+                    </div>
+                    <ul style={{ margin: 0, paddingLeft: 18, color: "#cbd5e1" }}>
+                      {pathologySummary.reasons?.length ? (
+                        pathologySummary.reasons.map((reason, idx) => (
+                          <li key={idx} style={{ marginBottom: 6 }}>
+                            {reason === "many_frames_fit_no_normal_phase_well" &&
+                              "Многие кадры плохо укладываются в нормальные фазы"}
+                            {reason === "phase_assignment_is_ambiguous" &&
+                              "Фазовая классификация часто неоднозначна"}
+                            {reason === "multiple_frames_have_extreme_deviations" &&
+                              "Во многих кадрах есть выраженные отклонения"}
+                            {reason === "phase_progression_is_inconsistent" &&
+                              "Последовательность фаз выглядит нелогичной"}
+                            {reason === "knee_motion_is_highly_irregular" &&
+                              "Движение колена сильно нерегулярно"}
+                            {reason === "ankle_motion_is_highly_irregular" &&
+                              "Движение голеностопа сильно нерегулярно"}
+                          </li>
+                        ))
+                      ) : (
+                        <li>Явных причин не выделено</li>
+                      )}
+                    </ul>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ color: "#94a3b8" }}>
+                  После анализа здесь появится общая оценка последовательности.
+                </div>
+              )}
+            </div>
+
+            <div
+              style={{
+                background: "#0f172a",
+                border: "1px solid #1e293b",
+                borderRadius: 24,
+                padding: 20,
+              }}
+            >
+              <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 12 }}>
+                Выбранные кадры
+              </h2>
+
+              {frames.length ? (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
+                    gap: 10,
+                  }}
+                >
+                  {frames.map((frame, idx) => (
+                    <FrameCard
+                      key={`${frame.step}-${frame.time}`}
+                      frame={frame}
+                      isActive={idx === selectedFrame}
+                      onClick={() => setSelectedFrame(idx)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div style={{ color: "#94a3b8" }}>
+                  После анализа тут появятся 4 ключевых кадра.
+                </div>
+              )}
+            </div>
+
+            <div
+              style={{
+                background: "#0f172a",
+                border: "1px solid #1e293b",
+                borderRadius: 24,
+                padding: 20,
+              }}
+            >
+              <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 12 }}>
+                Интерпретация кадра
+              </h2>
+
+              {currentFrame ? (
+                <div style={{ display: "grid", gap: 10 }}>
+                  <div style={{ fontSize: 18, fontWeight: 800 }}>
+                    {currentFrame.text.phaseTitle}
+                  </div>
+                  <div style={{ color: "#cbd5e1" }}>
+                    Сторона: {currentFrame.text.side}
+                  </div>
+                  <div style={{ color: "#cbd5e1" }}>
+                    Фокус: {currentFrame.text.focus}
+                  </div>
+                  <div style={{ color: "#e2e8f0", lineHeight: 1.5 }}>
+                    {currentFrame.text.summary}
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop: 6,
+                      borderRadius: 16,
+                      padding: 12,
+                      background: "rgba(148,163,184,0.08)",
+                    }}
+                  >
+                    <div style={{ marginBottom: 6 }}>{currentFrame.text.hip}</div>
+                    <div style={{ marginBottom: 6 }}>{currentFrame.text.knee}</div>
+                    <div style={{ marginBottom: 6 }}>{currentFrame.text.ankle}</div>
+                    <div style={{ marginBottom: 6 }}>{currentFrame.text.shank}</div>
+                    <div>{currentFrame.text.foot}</div>
+                  </div>
+
+                  <div
+                    style={{
+                      color: "#fbbf24",
+                      background: "rgba(251,191,36,0.08)",
+                      border: "1px solid rgba(251,191,36,0.22)",
+                      borderRadius: 14,
+                      padding: 12,
+                    }}
+                  >
+                    <strong>Предупреждения:</strong> {currentFrame.text.warnings}
+                  </div>
+
+                  <div style={{ color: "#94a3b8", fontSize: 13 }}>
+                    Время кадра: {currentFrame.time.toFixed(2)} c · confidence:{" "}
+                    {(currentFrame.ranked?.confidence * 100 || 0).toFixed(0)}%
+                  </div>
+                </div>
+              ) : (
+                <div style={{ color: "#94a3b8" }}>
+                  Выбери кадр после анализа.
+                </div>
+              )}
             </div>
           </div>
-        )}
-
-        {error ? <div style={{ color: "#fca5a5" }}>{error}</div> : null}
+        </div>
       </div>
     </div>
   );
