@@ -12,12 +12,27 @@ const LANDMARKS = {
   leftFootIndex: 31,
 };
 
-const PHASE_REF = {
-  initialContact: { title: "Initial contact", hip: 30, knee: 5, ankle: 0 },
-  loadingResponse: { title: "Loading response", hip: 25, knee: 15, ankle: 5 },
-  midStance: { title: "Mid stance", hip: 0, knee: 5, ankle: 5 },
-  terminalStance: { title: "Terminal stance", hip: -10, knee: 0, ankle: 10 },
-  swing: { title: "Swing", hip: 20, knee: 60, ankle: 0 },
+const PHASES = {
+  loadingResponse: {
+    title: "Loading response",
+    focus: "приём веса, колено, контакт стопы",
+    norm: { hip: 25, knee: 15, ankle: 5, foot: -5 },
+  },
+  midStance: {
+    title: "Mid stance",
+    focus: "контроль голени и стабильность колена",
+    norm: { hip: 0, knee: 5, ankle: 5, foot: 0 },
+  },
+  terminalStance: {
+    title: "Terminal stance",
+    focus: "tibia progression и push-off",
+    norm: { hip: -10, knee: 0, ankle: 10, foot: 5 },
+  },
+  swingClearance: {
+    title: "Swing clearance",
+    focus: "сгибание колена и clearance стопы",
+    norm: { hip: 20, knee: 60, ankle: 0, foot: 0 },
+  },
 };
 
 function clamp(value, min, max) {
@@ -43,6 +58,11 @@ function signedAngleToVertical(top, bottom) {
   const dx = bottom.x - top.x;
   const dy = bottom.y - top.y;
   return radToDeg(Math.atan2(dx, dy));
+}
+
+function signedAngleToHorizontal(a, b) {
+  if (!a || !b) return null;
+  return radToDeg(Math.atan2(-(b.y - a.y), b.x - a.x));
 }
 
 function getPoint(landmarks, idx, width, height) {
@@ -72,18 +92,22 @@ function extractMetrics(landmarks, width, height) {
 
   const shoulderCenter = averagePoint([leftShoulder, rightShoulder]);
   const pelvisCenter = averagePoint([leftHip, rightHip]);
+  const footPoint = leftHeel && leftFootIndex
+    ? { x: (leftHeel.x + leftFootIndex.x) / 2, y: (leftHeel.y + leftFootIndex.y) / 2 }
+    : leftFootIndex || leftHeel;
 
   const hip = signedAngleToVertical(leftHip, leftKnee) ?? 0;
   const rawKnee = angle3(leftHip, leftKnee, leftAnkle) ?? 180;
   const knee = Math.max(0, 180 - rawKnee);
-  const footPoint = leftFootIndex || leftHeel;
   const rawAnkle = angle3(leftKnee, leftAnkle, footPoint) ?? 90;
   const ankle = 90 - rawAnkle;
   const trunk = shoulderCenter && pelvisCenter ? signedAngleToVertical(shoulderCenter, pelvisCenter) ?? 0 : 0;
+  const foot = signedAngleToHorizontal(leftAnkle, footPoint) ?? 0;
+  const toeClearance = footPoint ? leftAnkle.y - footPoint.y : 0;
 
   return {
     points: { leftShoulder, leftHip, leftKnee, leftAnkle, leftHeel, leftFootIndex, footPoint },
-    metrics: { hip, knee, ankle, trunk },
+    metrics: { hip, knee, ankle, trunk, foot, toeClearance },
   };
 }
 
@@ -102,21 +126,57 @@ function qualityScore(result, width, height) {
   return score;
 }
 
-function estimatePhase(metrics) {
-  if (metrics.knee > 35) return "swing";
-  if (metrics.ankle > 6 && metrics.knee < 12) return "terminalStance";
-  if (metrics.knee > 10 && metrics.knee <= 25) return "loadingResponse";
-  if (metrics.hip > 15 && metrics.knee < 15) return "initialContact";
-  return "midStance";
+function phaseScore(metrics, phaseKey) {
+  const ref = PHASES[phaseKey].norm;
+  const diffs = {
+    hip: Math.abs(metrics.hip - ref.hip),
+    knee: Math.abs(metrics.knee - ref.knee),
+    ankle: Math.abs(metrics.ankle - ref.ankle),
+    foot: Math.abs(metrics.foot - ref.foot),
+  };
+
+  if (phaseKey === "loadingResponse") {
+    return diffs.knee + diffs.foot * 0.8 + diffs.ankle * 0.8 + Math.max(0, Math.abs(metrics.knee - 15) - 15);
+  }
+  if (phaseKey === "midStance") {
+    return diffs.knee + diffs.ankle + Math.abs(metrics.trunk) * 0.8;
+  }
+  if (phaseKey === "terminalStance") {
+    return diffs.ankle * 0.8 + diffs.hip + Math.abs(metrics.knee) * 0.5;
+  }
+  if (phaseKey === "swingClearance") {
+    return diffs.knee * 0.7 + diffs.foot + Math.max(0, 8 - metrics.toeClearance) * 2;
+  }
+  return 999;
 }
 
-function comments(metrics, phase) {
-  const ref = PHASE_REF[phase] || PHASE_REF.midStance;
+function footAssessment(metrics, phaseKey) {
+  if (phaseKey === "swingClearance") {
+    if (metrics.toeClearance < 6) return "Стопа: низкий clearance, риск зацепа";
+    if (metrics.foot < -8) return "Стопа: стопа свисает вниз в swing";
+    return "Стопа: clearance выглядит приемлемо";
+  }
+  if (phaseKey === "loadingResponse") {
+    if (metrics.foot < -12) return "Стопа: выраженная plantarflexed посадка";
+    if (metrics.foot > 8) return "Стопа: слишком dorsiflexed контакт";
+    return "Стопа: контакт выглядит ближе к ожидаемому";
+  }
+  if (phaseKey === "terminalStance") {
+    if (metrics.ankle < 4) return "Стопа: мало продвижения над стопой / слабый push-off";
+    return "Стопа: продвижение голени выглядит приемлемо";
+  }
+  return "Стопа: оцениваем как опорную стабильность";
+}
+
+function makeText(metrics, phaseKey) {
+  const ref = PHASES[phaseKey].norm;
   return {
-    phaseTitle: ref.title,
-    hip: `Таз: видео ${metrics.hip.toFixed(0)}°, норма ${ref.hip}°`,
-    knee: `Колено: видео ${metrics.knee.toFixed(0)}°, норма ${ref.knee}°`,
-    ankle: `Голеностоп: видео ${metrics.ankle.toFixed(0)}°, норма ${ref.ankle}°`,
+    phaseTitle: PHASES[phaseKey].title,
+    focus: PHASES[phaseKey].focus,
+    hip: `Таз: видео ≈ ${metrics.hip.toFixed(0)}°, норма ${ref.hip}°`,
+    knee: `Колено: видео ≈ ${metrics.knee.toFixed(0)}°, норма ${ref.knee}°`,
+    ankle: `Голеностоп: видео ≈ ${metrics.ankle.toFixed(0)}°, норма ${ref.ankle}°`,
+    foot: `${footAssessment(metrics, phaseKey)} · угол стопы ≈ ${metrics.foot.toFixed(0)}°`,
   };
 }
 
@@ -238,11 +298,11 @@ export default function App() {
     if (p.leftKnee) ctx.fillText(`${frame.metrics.knee.toFixed(0)}°`, p.leftKnee.x + 8, p.leftKnee.y - 8);
     if (p.leftAnkle) ctx.fillText(`${frame.metrics.ankle.toFixed(0)}°`, p.leftAnkle.x + 8, p.leftAnkle.y - 8);
 
-    ctx.fillStyle = "rgba(2, 6, 23, 0.75)";
-    ctx.fillRect(12, 12, 180, 44);
+    ctx.fillStyle = "rgba(2, 6, 23, 0.78)";
+    ctx.fillRect(12, 12, 220, 44);
     ctx.fillStyle = "white";
     ctx.font = "700 14px sans-serif";
-    ctx.fillText(`Фаза: ${frame.phaseTitle}`, 22, 40);
+    ctx.fillText(`Фаза: ${frame.text.phaseTitle}`, 22, 40);
   }
 
   async function showFrame(frame) {
@@ -275,8 +335,7 @@ export default function App() {
     const model = await ensureModel();
     const width = video.videoWidth || 720;
     const height = video.videoHeight || 1280;
-
-    const checkpoints = [0.08, 0.16, 0.24, 0.32, 0.40, 0.48, 0.56, 0.64, 0.72, 0.80, 0.88].map((p) =>
+    const checkpoints = Array.from({ length: 18 }, (_, i) => 0.05 + i * 0.05).map((p) =>
       Math.min((video.duration || 1) * p, Math.max((video.duration || 1) - 0.2, 0))
     );
 
@@ -300,69 +359,50 @@ export default function App() {
       const score = qualityScore(extracted, width, height);
       if (score < 70) continue;
 
-      const phase = estimatePhase(extracted.metrics);
-      const text = comments(extracted.metrics, phase);
-
       candidates.push({
-        step: "",
         metrics: extracted.metrics,
         landmarks,
-        phase,
-        phaseTitle: text.phaseTitle,
-        text,
         time,
         score,
       });
     }
 
-    if (candidates.length < 2) {
+    if (candidates.length < 4) {
       setError("Не удалось выделить хорошие кадры");
       setStatus("Попробуйте видео, где человек целиком в кадре");
       return;
     }
 
-    const sortedByTime = [...candidates].sort((a, b) => a.time - b.time);
-    const first = sortedByTime[0];
-    let maxKnee = sortedByTime[0];
-    let minKnee = sortedByTime[0];
-    let maxHip = sortedByTime[0];
+    const usedTimes = [];
+    const takeBestForPhase = (phaseKey) => {
+      const sorted = [...candidates]
+        .map((c) => ({ ...c, phaseCost: phaseScore(c.metrics, phaseKey) }))
+        .sort((a, b) => a.phaseCost - b.phaseCost);
 
-    for (const frame of sortedByTime) {
-      if (frame.metrics.knee > maxKnee.metrics.knee) maxKnee = frame;
-      if (frame.metrics.knee < minKnee.metrics.knee) minKnee = frame;
-      if (frame.metrics.hip > maxHip.metrics.hip) maxHip = frame;
-    }
-
-    const picked = [];
-    const addUnique = (frame) => {
-      if (!frame) return;
-      const exists = picked.some((item) => Math.abs(item.time - frame.time) < 0.08);
-      if (!exists) picked.push(frame);
+      const chosen = sorted.find((item) => !usedTimes.some((t) => Math.abs(t - item.time) < 0.08)) || sorted[0];
+      usedTimes.push(chosen.time);
+      const text = makeText(chosen.metrics, phaseKey);
+      return {
+        ...chosen,
+        phaseKey,
+        text,
+      };
     };
 
-    addUnique(first);
-    addUnique(minKnee);
-    addUnique(maxKnee);
-    addUnique(maxHip);
-
-    if (picked.length < 4) {
-      for (const frame of sortedByTime) {
-        addUnique(frame);
-        if (picked.length >= 4) break;
-      }
-    }
-
-    const limited = picked
-      .sort((a, b) => a.time - b.time)
-      .slice(0, 4)
+    const selected = [
+      takeBestForPhase("loadingResponse"),
+      takeBestForPhase("midStance"),
+      takeBestForPhase("terminalStance"),
+      takeBestForPhase("swingClearance"),
+    ].sort((a, b) => a.time - b.time)
       .map((f, i) => ({ ...f, step: String(i + 1) }));
 
-    setFrames(limited);
+    setFrames(selected);
     setSelectedFrame(0);
     setStatus("Готово");
 
     setTimeout(() => {
-      if (limited[0]) drawCurrent(limited[0]);
+      if (selected[0]) drawCurrent(selected[0]);
     }, 60);
   }
 
@@ -460,13 +500,16 @@ export default function App() {
 
             <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 24, padding: 16, display: "grid", gap: 12 }}>
               <div style={{ fontWeight: 700 }}>Фаза</div>
-              <div>{currentFrame?.phaseTitle}</div>
+              <div>{currentFrame?.text?.phaseTitle}</div>
+              <div style={{ color: "#94a3b8" }}>{currentFrame?.text?.focus}</div>
               <div style={{ fontWeight: 700 }}>Таз</div>
               <div>{currentFrame?.text?.hip}</div>
               <div style={{ fontWeight: 700 }}>Колено</div>
               <div>{currentFrame?.text?.knee}</div>
               <div style={{ fontWeight: 700 }}>Голеностоп</div>
               <div>{currentFrame?.text?.ankle}</div>
+              <div style={{ fontWeight: 700 }}>Стопа</div>
+              <div>{currentFrame?.text?.foot}</div>
             </div>
           </div>
         )}
@@ -476,4 +519,5 @@ export default function App() {
     </div>
   );
 }
+
 
