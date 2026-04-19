@@ -12,6 +12,14 @@ const LANDMARKS = {
   leftFootIndex: 31,
 };
 
+const PHASE_REF = {
+  initialContact: { title: "Initial contact", hip: 30, knee: 5, ankle: 0 },
+  loadingResponse: { title: "Loading response", hip: 25, knee: 15, ankle: 5 },
+  midStance: { title: "Mid stance", hip: 0, knee: 5, ankle: 5 },
+  terminalStance: { title: "Terminal stance", hip: -10, knee: 0, ankle: 10 },
+  swing: { title: "Swing", hip: 20, knee: 60, ankle: 0 },
+};
+
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
@@ -68,19 +76,20 @@ function extractMetrics(landmarks, width, height) {
   const hip = signedAngleToVertical(leftHip, leftKnee) ?? 0;
   const rawKnee = angle3(leftHip, leftKnee, leftAnkle) ?? 180;
   const knee = Math.max(0, 180 - rawKnee);
-  const rawAnkle = angle3(leftKnee, leftAnkle, leftFootIndex) ?? 90;
+  const footPoint = leftFootIndex || leftHeel;
+  const rawAnkle = angle3(leftKnee, leftAnkle, footPoint) ?? 90;
   const ankle = 90 - rawAnkle;
   const trunk = shoulderCenter && pelvisCenter ? signedAngleToVertical(shoulderCenter, pelvisCenter) ?? 0 : 0;
 
   return {
-    points: { leftShoulder, leftHip, leftKnee, leftAnkle, leftFootIndex, leftHeel },
+    points: { leftShoulder, leftHip, leftKnee, leftAnkle, leftHeel, leftFootIndex, footPoint },
     metrics: { hip, knee, ankle, trunk },
   };
 }
 
 function qualityScore(result, width, height) {
   if (!result) return 0;
-  const pts = Object.values(result.points).filter(Boolean);
+  const pts = [result.points.leftShoulder, result.points.leftHip, result.points.leftKnee, result.points.leftAnkle, result.points.footPoint].filter(Boolean);
   if (pts.length < 5) return 0;
   const xs = pts.map((p) => p.x);
   const ys = pts.map((p) => p.y);
@@ -93,12 +102,22 @@ function qualityScore(result, width, height) {
   return score;
 }
 
-function comments(metrics) {
-  return [
-    `Таз: ${metrics.hip.toFixed(0)}°`,
-    `Колено: ${metrics.knee.toFixed(0)}°`,
-    `Голеностоп: ${metrics.ankle.toFixed(0)}°`,
-  ];
+function estimatePhase(metrics) {
+  if (metrics.knee > 35) return "swing";
+  if (metrics.ankle > 6 && metrics.knee < 12) return "terminalStance";
+  if (metrics.knee > 10 && metrics.knee <= 25) return "loadingResponse";
+  if (metrics.hip > 15 && metrics.knee < 15) return "initialContact";
+  return "midStance";
+}
+
+function comments(metrics, phase) {
+  const ref = PHASE_REF[phase] || PHASE_REF.midStance;
+  return {
+    phaseTitle: ref.title,
+    hip: `Таз: видео ${metrics.hip.toFixed(0)}°, норма ${ref.hip}°`,
+    knee: `Колено: видео ${metrics.knee.toFixed(0)}°, норма ${ref.knee}°`,
+    ankle: `Голеностоп: видео ${metrics.ankle.toFixed(0)}°, норма ${ref.ankle}°`,
+  };
 }
 
 async function loadPoseLandmarker() {
@@ -193,21 +212,37 @@ export default function App() {
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
-      ctx.lineWidth = 4;
+      ctx.lineWidth = 5;
       ctx.strokeStyle = "#38bdf8";
       ctx.stroke();
+    };
+
+    const dot = (a) => {
+      if (!a) return;
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = "#38bdf8";
+      ctx.fill();
     };
 
     line(p.leftShoulder, p.leftHip);
     line(p.leftHip, p.leftKnee);
     line(p.leftKnee, p.leftAnkle);
-    line(p.leftAnkle, p.leftFootIndex);
+    line(p.leftAnkle, p.footPoint);
+
+    [p.leftShoulder, p.leftHip, p.leftKnee, p.leftAnkle, p.footPoint].forEach(dot);
 
     ctx.fillStyle = "white";
     ctx.font = "700 14px sans-serif";
-    if (p.leftHip) ctx.fillText(`Таз ${frame.metrics.hip.toFixed(0)}°`, p.leftHip.x + 10, p.leftHip.y - 10);
-    if (p.leftKnee) ctx.fillText(`Колено ${frame.metrics.knee.toFixed(0)}°`, p.leftKnee.x + 10, p.leftKnee.y - 10);
-    if (p.leftAnkle) ctx.fillText(`Голеностоп ${frame.metrics.ankle.toFixed(0)}°`, p.leftAnkle.x + 10, p.leftAnkle.y - 10);
+    if (p.leftHip) ctx.fillText(`${frame.metrics.hip.toFixed(0)}°`, p.leftHip.x + 8, p.leftHip.y - 8);
+    if (p.leftKnee) ctx.fillText(`${frame.metrics.knee.toFixed(0)}°`, p.leftKnee.x + 8, p.leftKnee.y - 8);
+    if (p.leftAnkle) ctx.fillText(`${frame.metrics.ankle.toFixed(0)}°`, p.leftAnkle.x + 8, p.leftAnkle.y - 8);
+
+    ctx.fillStyle = "rgba(2, 6, 23, 0.75)";
+    ctx.fillRect(12, 12, 180, 44);
+    ctx.fillStyle = "white";
+    ctx.font = "700 14px sans-serif";
+    ctx.fillText(`Фаза: ${frame.phaseTitle}`, 22, 40);
   }
 
   async function analyze() {
@@ -249,11 +284,16 @@ export default function App() {
       const score = qualityScore(extracted, width, height);
       if (score < 70) continue;
 
+      const phase = estimatePhase(extracted.metrics);
+      const text = comments(extracted.metrics, phase);
+
       candidates.push({
         step: "",
         metrics: extracted.metrics,
         landmarks,
-        comments: comments(extracted.metrics),
+        phase,
+        phaseTitle: text.phaseTitle,
+        text,
         time,
         score,
       });
@@ -266,7 +306,6 @@ export default function App() {
     }
 
     const sortedByTime = [...candidates].sort((a, b) => a.time - b.time);
-
     const first = sortedByTime[0];
     let maxKnee = sortedByTime[0];
     let minKnee = sortedByTime[0];
@@ -291,14 +330,7 @@ export default function App() {
     addUnique(maxHip);
 
     if (picked.length < 4) {
-      const byVariation = [...sortedByTime]
-        .sort((a, b) => {
-          const va = Math.abs(a.metrics.knee) + Math.abs(a.metrics.hip) + Math.abs(a.metrics.ankle);
-          const vb = Math.abs(b.metrics.knee) + Math.abs(b.metrics.hip) + Math.abs(b.metrics.ankle);
-          return vb - va;
-        });
-
-      for (const frame of byVariation) {
+      for (const frame of sortedByTime) {
         addUnique(frame);
         if (picked.length >= 4) break;
       }
@@ -307,10 +339,7 @@ export default function App() {
     const limited = picked
       .sort((a, b) => a.time - b.time)
       .slice(0, 4)
-      .map((f, i) => ({
-        ...f,
-        step: String(i + 1),
-      }));
+      .map((f, i) => ({ ...f, step: String(i + 1) }));
 
     setFrames(limited);
     setSelectedFrame(0);
@@ -412,14 +441,14 @@ export default function App() {
             </div>
 
             <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 24, padding: 16, display: "grid", gap: 12 }}>
-              <div style={{ fontWeight: 700 }}>Кадр</div>
-              <div>{currentFrame?.step}</div>
+              <div style={{ fontWeight: 700 }}>Фаза</div>
+              <div>{currentFrame?.phaseTitle}</div>
               <div style={{ fontWeight: 700 }}>Таз</div>
-              <div>{currentFrame?.comments?.[0]}</div>
+              <div>{currentFrame?.text?.hip}</div>
               <div style={{ fontWeight: 700 }}>Колено</div>
-              <div>{currentFrame?.comments?.[1]}</div>
+              <div>{currentFrame?.text?.knee}</div>
               <div style={{ fontWeight: 700 }}>Голеностоп</div>
-              <div>{currentFrame?.comments?.[2]}</div>
+              <div>{currentFrame?.text?.ankle}</div>
             </div>
           </div>
         )}
