@@ -228,8 +228,7 @@ export default function App() {
 
   async function analyze() {
     const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas || !videoUrl) return;
+    if (!video || !videoUrl) return;
     if (video.readyState < 2) {
       setError("Видео ещё грузится");
       return;
@@ -264,7 +263,7 @@ export default function App() {
       best.push({
         phase: estimatePhase(extracted.metrics),
         metrics: extracted.metrics,
-        points: extractMetrics(landmarks, canvas.width || width, canvas.height || height).points,
+        points: extracted.points,
         comments: comments(extracted.metrics),
         time,
       });
@@ -281,7 +280,9 @@ export default function App() {
     setSelectedFrame(0);
     setStatus("Готово");
 
-    setTimeout(() => drawCurrent(limited[0]), 60);
+    setTimeout(() => {
+      if (limited[0]) drawCurrent(limited[0]);
+    }, 60);
   }
 
   function onLoadedMetadata() {
