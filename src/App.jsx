@@ -7,31 +7,35 @@ const LANDMARKS = {
   leftHip: 23,
   rightHip: 24,
   leftKnee: 25,
+  rightKnee: 26,
   leftAnkle: 27,
+  rightAnkle: 28,
   leftHeel: 29,
+  rightHeel: 30,
   leftFootIndex: 31,
+  rightFootIndex: 32,
 };
 
 const PHASES = {
   loadingResponse: {
     title: "Loading response",
-    focus: "приём веса, колено, контакт стопы",
-    norm: { hip: 25, knee: 15, ankle: 5, foot: -5 },
+    focus: "приём веса, контакт стопы, колено",
+    norm: { hip: 25, knee: 15, ankle: 5, footProgression: 0 },
   },
   midStance: {
     title: "Mid stance",
     focus: "контроль голени и стабильность колена",
-    norm: { hip: 0, knee: 5, ankle: 5, foot: 0 },
+    norm: { hip: 0, knee: 5, ankle: 5, footProgression: 0 },
   },
   terminalStance: {
     title: "Terminal stance",
     focus: "tibia progression и push-off",
-    norm: { hip: -10, knee: 0, ankle: 10, foot: 5 },
+    norm: { hip: -10, knee: 0, ankle: 10, footProgression: 5 },
   },
   swingClearance: {
     title: "Swing clearance",
-    focus: "сгибание колена и clearance стопы",
-    norm: { hip: 20, knee: 60, ankle: 0, foot: 0 },
+    focus: "clearance стопы и сгибание колена",
+    norm: { hip: 20, knee: 60, ankle: 0, footProgression: 0 },
   },
 };
 
@@ -60,15 +64,25 @@ function signedAngleToVertical(top, bottom) {
   return radToDeg(Math.atan2(dx, dy));
 }
 
-function signedAngleToHorizontal(a, b) {
+function signedAngle(a, b) {
   if (!a || !b) return null;
   return radToDeg(Math.atan2(-(b.y - a.y), b.x - a.x));
+}
+
+function distance(a, b) {
+  if (!a || !b) return 0;
+  return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
 function getPoint(landmarks, idx, width, height) {
   const p = landmarks?.[idx];
   if (!p) return null;
-  return { x: p.x * width, y: p.y * height };
+  return {
+    x: p.x * width,
+    y: p.y * height,
+    z: p.z ?? 0,
+    visibility: p.visibility ?? 0,
+  };
 }
 
 function averagePoint(points) {
@@ -80,40 +94,41 @@ function averagePoint(points) {
   };
 }
 
-function extractMetrics(landmarks, width, height) {
-  const leftShoulder = getPoint(landmarks, LANDMARKS.leftShoulder, width, height);
-  const rightShoulder = getPoint(landmarks, LANDMARKS.rightShoulder, width, height);
-  const leftHip = getPoint(landmarks, LANDMARKS.leftHip, width, height);
-  const rightHip = getPoint(landmarks, LANDMARKS.rightHip, width, height);
-  const leftKnee = getPoint(landmarks, LANDMARKS.leftKnee, width, height);
-  const leftAnkle = getPoint(landmarks, LANDMARKS.leftAnkle, width, height);
-  const leftHeel = getPoint(landmarks, LANDMARKS.leftHeel, width, height);
-  const leftFootIndex = getPoint(landmarks, LANDMARKS.leftFootIndex, width, height);
+function extractLeg(landmarks, side, width, height) {
+  const shoulder = getPoint(landmarks, side === "left" ? LANDMARKS.leftShoulder : LANDMARKS.rightShoulder, width, height);
+  const hip = getPoint(landmarks, side === "left" ? LANDMARKS.leftHip : LANDMARKS.rightHip, width, height);
+  const knee = getPoint(landmarks, side === "left" ? LANDMARKS.leftKnee : LANDMARKS.rightKnee, width, height);
+  const ankle = getPoint(landmarks, side === "left" ? LANDMARKS.leftAnkle : LANDMARKS.rightAnkle, width, height);
+  const heel = getPoint(landmarks, side === "left" ? LANDMARKS.leftHeel : LANDMARKS.rightHeel, width, height);
+  const toe = getPoint(landmarks, side === "left" ? LANDMARKS.leftFootIndex : LANDMARKS.rightFootIndex, width, height);
+  const footPoint = heel && toe
+    ? { x: (heel.x + toe.x) / 2, y: (heel.y + toe.y) / 2 }
+    : toe || heel;
 
-  const shoulderCenter = averagePoint([leftShoulder, rightShoulder]);
-  const pelvisCenter = averagePoint([leftHip, rightHip]);
-  const footPoint = leftHeel && leftFootIndex
-    ? { x: (leftHeel.x + leftFootIndex.x) / 2, y: (leftHeel.y + leftFootIndex.y) / 2 }
-    : leftFootIndex || leftHeel;
-
-  const hip = signedAngleToVertical(leftHip, leftKnee) ?? 0;
-  const rawKnee = angle3(leftHip, leftKnee, leftAnkle) ?? 180;
-  const knee = Math.max(0, 180 - rawKnee);
-  const rawAnkle = angle3(leftKnee, leftAnkle, footPoint) ?? 90;
-  const ankle = 90 - rawAnkle;
-  const trunk = shoulderCenter && pelvisCenter ? signedAngleToVertical(shoulderCenter, pelvisCenter) ?? 0 : 0;
-  const foot = signedAngleToHorizontal(leftAnkle, footPoint) ?? 0;
-  const toeClearance = footPoint ? leftAnkle.y - footPoint.y : 0;
+  const rawKnee = angle3(hip, knee, ankle) ?? 180;
+  const kneeFlexion = Math.max(0, 180 - rawKnee);
+  const rawAnkle = angle3(knee, ankle, footPoint) ?? 90;
+  const ankleAngle = 90 - rawAnkle;
+  const hipAngle = signedAngleToVertical(hip, knee) ?? 0;
+  const legSize = distance(hip, knee) + distance(knee, ankle) + distance(ankle, footPoint);
+  const toeClearance = toe ? ankle.y - toe.y : 0;
 
   return {
-    points: { leftShoulder, leftHip, leftKnee, leftAnkle, leftHeel, leftFootIndex, footPoint },
-    metrics: { hip, knee, ankle, trunk, foot, toeClearance },
+    side,
+    points: { shoulder, hip, knee, ankle, heel, toe, footPoint },
+    metrics: {
+      hip: hipAngle,
+      knee: kneeFlexion,
+      ankle: ankleAngle,
+      toeClearance,
+      legSize,
+    },
   };
 }
 
-function qualityScore(result, width, height) {
-  if (!result) return 0;
-  const pts = [result.points.leftShoulder, result.points.leftHip, result.points.leftKnee, result.points.leftAnkle, result.points.footPoint].filter(Boolean);
+function qualityScore(leg, width, height) {
+  if (!leg) return 0;
+  const pts = [leg.points.shoulder, leg.points.hip, leg.points.knee, leg.points.ankle, leg.points.footPoint].filter(Boolean);
   if (pts.length < 5) return 0;
   const xs = pts.map((p) => p.x);
   const ys = pts.map((p) => p.y);
@@ -121,62 +136,101 @@ function qualityScore(result, width, height) {
   const centerX = xs.reduce((a, b) => a + b, 0) / xs.length;
   let score = 0;
   if (bodyHeight > height * 0.35) score += 40;
-  if (centerX > width * 0.12 && centerX < width * 0.88) score += 30;
-  if (pts.length >= 5) score += 30;
+  if (centerX > width * 0.08 && centerX < width * 0.92) score += 20;
+  if (leg.metrics.legSize > height * 0.22) score += 20;
+  if (pts.length >= 5) score += 20;
   return score;
 }
 
-function phaseScore(metrics, phaseKey) {
-  const ref = PHASES[phaseKey].norm;
-  const diffs = {
-    hip: Math.abs(metrics.hip - ref.hip),
-    knee: Math.abs(metrics.knee - ref.knee),
-    ankle: Math.abs(metrics.ankle - ref.ankle),
-    foot: Math.abs(metrics.foot - ref.foot),
-  };
+function chooseNearLeg(landmarks, width, height, previousSide = null) {
+  const left = extractLeg(landmarks, "left", width, height);
+  const right = extractLeg(landmarks, "right", width, height);
+  const leftScore = qualityScore(left, width, height);
+  const rightScore = qualityScore(right, width, height);
 
+  if (leftScore < 60 && rightScore < 60) return null;
+
+  let chosen = left.metrics.legSize >= right.metrics.legSize ? left : right;
+
+  if (previousSide) {
+    const prev = previousSide === "left" ? left : right;
+    const alt = previousSide === "left" ? right : left;
+    const prevGood = qualityScore(prev, width, height);
+    const altGood = qualityScore(alt, width, height);
+    if (prevGood >= 60 && prev.metrics.legSize >= alt.metrics.legSize * 0.88) {
+      chosen = prev;
+    } else if (altGood >= 60) {
+      chosen = alt;
+    }
+  }
+
+  return chosen;
+}
+
+function buildProgressionLine(samples) {
+  const valid = samples.filter((s) => s?.points?.hip && s?.points?.footPoint);
+  if (valid.length < 2) return null;
+  const first = valid[0].points.hip;
+  const last = valid[valid.length - 1].points.hip;
+  return { start: first, end: last };
+}
+
+function progressionAngle(line) {
+  if (!line) return 0;
+  return signedAngle(line.start, line.end) ?? 0;
+}
+
+function footRelativeToProgression(ankle, footPoint, line) {
+  if (!ankle || !footPoint) return 0;
+  const footAngle = signedAngle(ankle, footPoint) ?? 0;
+  return footAngle - progressionAngle(line);
+}
+
+function phaseScore(metrics, phaseKey) {
+  const norm = PHASES[phaseKey].norm;
   if (phaseKey === "loadingResponse") {
-    return diffs.knee + diffs.foot * 0.8 + diffs.ankle * 0.8 + Math.max(0, Math.abs(metrics.knee - 15) - 15);
+    return Math.abs(metrics.knee - norm.knee) * 1.2 + Math.abs(metrics.footProgression - norm.footProgression) + Math.abs(metrics.ankle - norm.ankle);
   }
   if (phaseKey === "midStance") {
-    return diffs.knee + diffs.ankle + Math.abs(metrics.trunk) * 0.8;
+    return Math.abs(metrics.knee - norm.knee) + Math.abs(metrics.ankle - norm.ankle) + Math.abs(metrics.hip - norm.hip) * 0.8;
   }
   if (phaseKey === "terminalStance") {
-    return diffs.ankle * 0.8 + diffs.hip + Math.abs(metrics.knee) * 0.5;
+    return Math.abs(metrics.ankle - norm.ankle) * 1.2 + Math.abs(metrics.hip - norm.hip) + Math.abs(metrics.knee - norm.knee);
   }
   if (phaseKey === "swingClearance") {
-    return diffs.knee * 0.7 + diffs.foot + Math.max(0, 8 - metrics.toeClearance) * 2;
+    return Math.abs(metrics.knee - norm.knee) * 0.9 + Math.abs(metrics.footProgression - norm.footProgression) + Math.max(0, 10 - metrics.toeClearance) * 2;
   }
   return 999;
 }
 
 function footAssessment(metrics, phaseKey) {
   if (phaseKey === "swingClearance") {
-    if (metrics.toeClearance < 6) return "Стопа: низкий clearance, риск зацепа";
-    if (metrics.foot < -8) return "Стопа: стопа свисает вниз в swing";
-    return "Стопа: clearance выглядит приемлемо";
+    if (metrics.toeClearance < 8) return `Стопа: низкий clearance, риск зацепа · clearance ≈ ${metrics.toeClearance.toFixed(0)} px`;
+    if (metrics.footProgression < -10) return `Стопа: стопа свисает вниз в swing · угол ≈ ${metrics.footProgression.toFixed(0)}°`;
+    return `Стопа: clearance выглядит приемлемо · clearance ≈ ${metrics.toeClearance.toFixed(0)} px`;
   }
   if (phaseKey === "loadingResponse") {
-    if (metrics.foot < -12) return "Стопа: выраженная plantarflexed посадка";
-    if (metrics.foot > 8) return "Стопа: слишком dorsiflexed контакт";
-    return "Стопа: контакт выглядит ближе к ожидаемому";
+    if (metrics.footProgression < -12) return `Стопа: выраженная plantarflexed посадка · угол ≈ ${metrics.footProgression.toFixed(0)}°`;
+    if (metrics.footProgression > 10) return `Стопа: слишком dorsiflexed контакт · угол ≈ ${metrics.footProgression.toFixed(0)}°`;
+    return `Стопа: контакт ближе к ожидаемому · угол ≈ ${metrics.footProgression.toFixed(0)}°`;
   }
   if (phaseKey === "terminalStance") {
-    if (metrics.ankle < 4) return "Стопа: мало продвижения над стопой / слабый push-off";
-    return "Стопа: продвижение голени выглядит приемлемо";
+    if (metrics.ankle < 4) return `Стопа: мало продвижения над стопой / слабый push-off · угол ≈ ${metrics.footProgression.toFixed(0)}°`;
+    return `Стопа: push-off выглядит приемлемо · угол ≈ ${metrics.footProgression.toFixed(0)}°`;
   }
-  return "Стопа: оцениваем как опорную стабильность";
+  return `Стопа: оцениваем как опорную стабильность · угол ≈ ${metrics.footProgression.toFixed(0)}°`;
 }
 
-function makeText(metrics, phaseKey) {
+function makeText(metrics, phaseKey, side) {
   const ref = PHASES[phaseKey].norm;
   return {
     phaseTitle: PHASES[phaseKey].title,
     focus: PHASES[phaseKey].focus,
+    side: side === "left" ? "левая (ближняя)" : "правая (ближняя)",
     hip: `Таз: видео ≈ ${metrics.hip.toFixed(0)}°, норма ${ref.hip}°`,
     knee: `Колено: видео ≈ ${metrics.knee.toFixed(0)}°, норма ${ref.knee}°`,
     ankle: `Голеностоп: видео ≈ ${metrics.ankle.toFixed(0)}°, норма ${ref.ankle}°`,
-    foot: `${footAssessment(metrics, phaseKey)} · угол стопы ≈ ${metrics.foot.toFixed(0)}°`,
+    foot: footAssessment(metrics, phaseKey),
   };
 }
 
@@ -230,6 +284,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [frames, setFrames] = useState([]);
   const [selectedFrame, setSelectedFrame] = useState(0);
+  const [progression, setProgression] = useState(null);
 
   const currentFrame = frames[selectedFrame] || null;
 
@@ -264,42 +319,52 @@ export default function App() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    const extracted = extractMetrics(frame.landmarks, canvas.width, canvas.height);
-    const p = extracted.points;
+    const leg = chooseNearLeg(frame.landmarks, canvas.width, canvas.height, frame.side);
+    if (!leg) return;
+    const p = leg.points;
 
-    const line = (a, b) => {
+    const line = (a, b, color = "#38bdf8", width = 5) => {
       if (!a || !b) return;
       ctx.beginPath();
       ctx.moveTo(a.x, a.y);
       ctx.lineTo(b.x, b.y);
-      ctx.lineWidth = 5;
-      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = width;
+      ctx.strokeStyle = color;
       ctx.stroke();
     };
 
-    const dot = (a) => {
+    const dot = (a, color = "#38bdf8") => {
       if (!a) return;
       ctx.beginPath();
       ctx.arc(a.x, a.y, 5, 0, Math.PI * 2);
-      ctx.fillStyle = "#38bdf8";
+      ctx.fillStyle = color;
       ctx.fill();
     };
 
-    line(p.leftShoulder, p.leftHip);
-    line(p.leftHip, p.leftKnee);
-    line(p.leftKnee, p.leftAnkle);
-    line(p.leftAnkle, p.footPoint);
+    if (progression?.start && progression?.end) {
+      line(
+        { x: 18, y: progression.start.y },
+        { x: canvas.width - 18, y: progression.end.y },
+        "#ef4444",
+        2
+      );
+    }
 
-    [p.leftShoulder, p.leftHip, p.leftKnee, p.leftAnkle, p.footPoint].forEach(dot);
+    line(p.shoulder, p.hip);
+    line(p.hip, p.knee);
+    line(p.knee, p.ankle);
+    line(p.ankle, p.footPoint);
+
+    [p.shoulder, p.hip, p.knee, p.ankle, p.footPoint].forEach((pt) => dot(pt));
 
     ctx.fillStyle = "white";
     ctx.font = "700 14px sans-serif";
-    if (p.leftHip) ctx.fillText(`${frame.metrics.hip.toFixed(0)}°`, p.leftHip.x + 8, p.leftHip.y - 8);
-    if (p.leftKnee) ctx.fillText(`${frame.metrics.knee.toFixed(0)}°`, p.leftKnee.x + 8, p.leftKnee.y - 8);
-    if (p.leftAnkle) ctx.fillText(`${frame.metrics.ankle.toFixed(0)}°`, p.leftAnkle.x + 8, p.leftAnkle.y - 8);
+    if (p.hip) ctx.fillText(`${frame.metrics.hip.toFixed(0)}°`, p.hip.x + 8, p.hip.y - 8);
+    if (p.knee) ctx.fillText(`${frame.metrics.knee.toFixed(0)}°`, p.knee.x + 8, p.knee.y - 8);
+    if (p.ankle) ctx.fillText(`${frame.metrics.ankle.toFixed(0)}°`, p.ankle.x + 8, p.ankle.y - 8);
 
-    ctx.fillStyle = "rgba(2, 6, 23, 0.78)";
-    ctx.fillRect(12, 12, 220, 44);
+    ctx.fillStyle = "rgba(2, 6, 23, 0.8)";
+    ctx.fillRect(12, 12, 250, 44);
     ctx.fillStyle = "white";
     ctx.font = "700 14px sans-serif";
     ctx.fillText(`Фаза: ${frame.text.phaseTitle}`, 22, 40);
@@ -339,7 +404,8 @@ export default function App() {
       Math.min((video.duration || 1) * p, Math.max((video.duration || 1) - 0.2, 0))
     );
 
-    const candidates = [];
+    const tracked = [];
+    let lockedSide = null;
 
     for (const time of checkpoints) {
       await new Promise((resolve) => {
@@ -355,23 +421,41 @@ export default function App() {
       const landmarks = result?.landmarks?.[0];
       if (!landmarks) continue;
 
-      const extracted = extractMetrics(landmarks, width, height);
-      const score = qualityScore(extracted, width, height);
+      const leg = chooseNearLeg(landmarks, width, height, lockedSide);
+      if (!leg) continue;
+      const score = qualityScore(leg, width, height);
       if (score < 70) continue;
 
-      candidates.push({
-        metrics: extracted.metrics,
+      lockedSide = leg.side;
+      tracked.push({
         landmarks,
+        side: leg.side,
+        points: leg.points,
+        metrics: { ...leg.metrics },
         time,
         score,
       });
     }
 
-    if (candidates.length < 4) {
-      setError("Не удалось выделить хорошие кадры");
-      setStatus("Попробуйте видео, где человек целиком в кадре");
+    if (tracked.length < 4) {
+      setError("Не удалось стабильно отследить ближнюю ногу");
+      setStatus("Попробуйте видео, где одна сторона тела видна чище и дольше");
       return;
     }
+
+    const prog = buildProgressionLine(tracked);
+    setProgression(prog);
+
+    const candidates = tracked.map((item) => {
+      const footProgression = footRelativeToProgression(item.points.ankle, item.points.footPoint, prog);
+      return {
+        ...item,
+        metrics: {
+          ...item.metrics,
+          footProgression,
+        },
+      };
+    });
 
     const usedTimes = [];
     const takeBestForPhase = (phaseKey) => {
@@ -381,11 +465,9 @@ export default function App() {
 
       const chosen = sorted.find((item) => !usedTimes.some((t) => Math.abs(t - item.time) < 0.08)) || sorted[0];
       usedTimes.push(chosen.time);
-      const text = makeText(chosen.metrics, phaseKey);
       return {
         ...chosen,
-        phaseKey,
-        text,
+        text: makeText(chosen.metrics, phaseKey, chosen.side),
       };
     };
 
@@ -394,7 +476,8 @@ export default function App() {
       takeBestForPhase("midStance"),
       takeBestForPhase("terminalStance"),
       takeBestForPhase("swingClearance"),
-    ].sort((a, b) => a.time - b.time)
+    ]
+      .sort((a, b) => a.time - b.time)
       .map((f, i) => ({ ...f, step: String(i + 1) }));
 
     setFrames(selected);
@@ -419,6 +502,7 @@ export default function App() {
     setVideoUrl(url);
     setFrames([]);
     setSelectedFrame(0);
+    setProgression(null);
     setError("");
     setStatus("Видео загружается...");
     setTimeout(() => videoRef.current?.load(), 50);
@@ -502,6 +586,8 @@ export default function App() {
               <div style={{ fontWeight: 700 }}>Фаза</div>
               <div>{currentFrame?.text?.phaseTitle}</div>
               <div style={{ color: "#94a3b8" }}>{currentFrame?.text?.focus}</div>
+              <div style={{ fontWeight: 700 }}>Нога</div>
+              <div>{currentFrame?.text?.side}</div>
               <div style={{ fontWeight: 700 }}>Таз</div>
               <div>{currentFrame?.text?.hip}</div>
               <div style={{ fontWeight: 700 }}>Колено</div>
@@ -519,5 +605,3 @@ export default function App() {
     </div>
   );
 }
-
-
