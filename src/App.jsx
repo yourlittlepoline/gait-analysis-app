@@ -103,20 +103,23 @@ function qualityScore(result, width, height) {
   return score;
 }
 
-function comments(metrics) {
-  const out = [];
-  if (Math.abs(metrics.hip) > 20) out.push("Таз/бедро: отклонение");
-  else out.push("Таз: близко к нейтрали");
+function comments(metrics, phaseName) {
+  const phaseMap = {
+    initialContact: { name: "Initial contact", hip: 30, knee: 5, ankle: 0 },
+    loadingResponse: { name: "Loading response", hip: 25, knee: 15, ankle: 5 },
+    midStance: { name: "Mid stance", hip: 0, knee: 5, ankle: 5 },
+    terminalStance: { name: "Terminal stance", hip: -10, knee: 0, ankle: 10 },
+    swing: { name: "Swing", hip: 20, knee: 60, ankle: 0 },
+  };
 
-  if (metrics.knee > 25) out.push("Колено: больше сгибания");
-  else if (metrics.knee < 5) out.push("Колено: мало сгибания");
-  else out.push("Колено: умеренно");
+  const ref = phaseMap[phaseName] || phaseMap.midStance;
 
-  if (metrics.ankle < -5) out.push("Голеностоп: мало тыльного сгибания");
-  else if (metrics.ankle > 10) out.push("Голеностоп: много тыльного сгибания");
-  else out.push("Голеностоп: умеренно");
-
-  return out;
+  return [
+    `Фаза: ${ref.name}`,
+    `Таз: у вас ${metrics.hip.toFixed(0)}°, ориентир ${ref.hip}°`,
+    `Колено: у вас ${metrics.knee.toFixed(0)}°, ориентир ${ref.knee}°`,
+    `Голеностоп: у вас ${metrics.ankle.toFixed(0)}°, ориентир ${ref.ankle}°`,
+  ];
 }
 
 async function loadPoseLandmarker() {
@@ -152,7 +155,7 @@ function FrameCard({ frame, isActive, onClick }) {
         cursor: "pointer",
       }}
     >
-      {frame.phase}
+      {frame.step}
     </button>
   );
 }
@@ -264,7 +267,7 @@ export default function App() {
         phase: estimatePhase(extracted.metrics),
         metrics: extracted.metrics,
         points: extracted.points,
-        comments: comments(extracted.metrics),
+        comments: comments(extracted.metrics, estimatePhase(extracted.metrics)),
         time,
       });
     }
@@ -275,7 +278,11 @@ export default function App() {
       return;
     }
 
-    const limited = best.slice(0, 4).map((f, i) => ({ ...f, phase: String(i + 1) }));
+    const limited = best.slice(0, 4).map((f, i) => ({
+  ...f,
+  step: String(i + 1),
+  comments: comments(f.metrics, f.phase),
+}));
     setFrames(limited);
     setSelectedFrame(0);
     setStatus("Готово");
@@ -376,12 +383,17 @@ export default function App() {
             </div>
 
             <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 24, padding: 16, display: "grid", gap: 12 }}>
-              <div style={{ fontWeight: 700 }}>Таз</div>
-              <div>{currentFrame?.comments?.[0]}</div>
-              <div style={{ fontWeight: 700 }}>Колено</div>
-              <div>{currentFrame?.comments?.[1]}</div>
-              <div style={{ fontWeight: 700 }}>Голеностоп</div>
-              <div>{currentFrame?.comments?.[2]}</div>
+              <div style={{ fontWeight: 700 }}>Фаза</div>
+<div>{currentFrame?.comments?.[0]}</div>
+
+<div style={{ fontWeight: 700 }}>Таз</div>
+<div>{currentFrame?.comments?.[1]}</div>
+
+<div style={{ fontWeight: 700 }}>Колено</div>
+<div>{currentFrame?.comments?.[2]}</div>
+
+<div style={{ fontWeight: 700 }}>Голеностоп</div>
+<div>{currentFrame?.comments?.[3]}</div>
             </div>
           </div>
         )}
