@@ -246,6 +246,27 @@ function rankPhases(metrics) {
     ranked: [],
   };
 }
+
+if (metrics.isSustainedContact) {
+  return {
+    bestPhase: "midStance",
+    bestCost: 0,
+    secondPhase: null,
+    secondCost: 0,
+    confidence: 0.7,
+    ranked: [],
+  };
+}
+  if (!metrics.isFootOnGround) {
+  return {
+    bestPhase: "swingClearance",
+    bestCost: 0,
+    secondPhase: null,
+    secondCost: 0,
+    confidence: 0.9,
+    ranked: [],
+  };
+}
   const ranked = Object.keys(PHASES)
     .map((phaseKey) => ({
       phaseKey,
@@ -710,17 +731,29 @@ export default function App() {
     const prog = buildProgressionLine(tracked);
     setProgression(prog);
 
-    const candidates = tracked.map((item) => {
-      const footProgression = footRelativeToProgression(item.points.ankle, item.points.footPoint, prog);
-      return {
-        ...item,
-        metrics: {
-          ...item.metrics,
-          footProgression,
-          shankAngle: signedAngleToVertical(item.points.knee, item.points.ankle) ?? 0,
-        },
-      };
-    });
+    const candidates = tracked.map((item, i, arr) => {
+  const footProgression = footRelativeToProgression(item.points.ankle, item.points.footPoint, prog);
+
+  const prev = arr[i - 1];
+  const next = arr[i + 1];
+
+  const isSustainedContact =
+  item.metrics.isFootOnGround &&
+  (
+    (prev && prev.metrics.isFootOnGround) ||
+    (next && next.metrics.isFootOnGround)
+  );
+
+  return {
+    ...item,
+    metrics: {
+      ...item.metrics,
+      footProgression,
+      shankAngle: signedAngleToVertical(item.points.knee, item.points.ankle) ?? 0,
+      isSustainedContact,
+    },
+  };
+});
 
     const pathology = analyzeSequencePathology(candidates);
     setPathologySummary(pathology);
