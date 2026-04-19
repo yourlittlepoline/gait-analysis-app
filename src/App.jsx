@@ -111,7 +111,7 @@ function extractLeg(landmarks, side, width, height) {
   const hipAngle = signedAngleToVertical(hip, knee) ?? 0;
   const shankAngle = signedAngleToVertical(knee, ankle) ?? 0;
   const legSize = distance(hip, knee) + distance(knee, ankle) + distance(ankle, footPoint);
-  const toeClearance = toe ? ankle.y - toe.y : 0;
+  const toeClearance = toe && heel ? Math.max(-40, Math.min(40, heel.y - toe.y)) : 0;
   const depthPoints = [hip, knee, ankle, heel, toe].filter(Boolean);
   const meanZ = depthPoints.length ? depthPoints.reduce((s, p) => s + (p.z ?? 0), 0) / depthPoints.length : 0;
 
@@ -266,9 +266,11 @@ function detectFrameLevelPathology(metrics, ranked) {
     flags.push("possible_knee_hyperextension_pattern");
   }
 
-  if (metrics.ankle < -20) flags.push("marked_plantarflexion");
-  if (metrics.ankle > 30) flags.push("marked_dorsiflexion");
-  if (metrics.toeClearance < 3) flags.push("low_toe_clearance");
+  if (metrics.ankle < -35) flags.push("marked_plantarflexion");
+  if (metrics.ankle > 35) flags.push("marked_dorsiflexion");
+  if (ranked.bestPhase === "swingClearance" && metrics.toeClearance < -8) {
+  flags.push("low_toe_clearance");
+}
   if (Math.abs(metrics.footProgression) > 28) {
     flags.push("marked_foot_progression_deviation");
   }
@@ -735,7 +737,7 @@ export default function App() {
           chosen.metrics,
           phaseKey,
           chosen.side,
-          pathology.isPathological,
+          pathology,
           chosen.frameFlags,
           chosen.ranked
         ),
