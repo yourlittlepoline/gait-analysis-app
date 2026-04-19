@@ -102,7 +102,7 @@ function extractLeg(landmarks, side, width, height) {
   const heel = getPoint(landmarks, side === "left" ? LANDMARKS.leftHeel : LANDMARKS.rightHeel, width, height);
   const toe = getPoint(landmarks, side === "left" ? LANDMARKS.leftFootIndex : LANDMARKS.rightFootIndex, width, height);
   const footPoint = heel && toe
-    ? { x: (heel.x + toe.x) / 2, y: (heel.y + toe.y) / 2 }
+    ? { x: (heel.x + toe.x) / 2, y: (heel.y + toe.y) / 2, z: ((heel.z ?? 0) + (toe.z ?? 0)) / 2 }
     : toe || heel;
 
   const rawKnee = angle3(hip, knee, ankle) ?? 180;
@@ -112,6 +112,8 @@ function extractLeg(landmarks, side, width, height) {
   const hipAngle = signedAngleToVertical(hip, knee) ?? 0;
   const legSize = distance(hip, knee) + distance(knee, ankle) + distance(ankle, footPoint);
   const toeClearance = toe ? ankle.y - toe.y : 0;
+  const depthPoints = [hip, knee, ankle, heel, toe].filter(Boolean);
+  const meanZ = depthPoints.length ? depthPoints.reduce((s, p) => s + (p.z ?? 0), 0) / depthPoints.length : 0;
 
   return {
     side,
@@ -122,6 +124,7 @@ function extractLeg(landmarks, side, width, height) {
       ankle: ankleAngle,
       toeClearance,
       legSize,
+      meanZ,
     },
   };
 }
@@ -150,14 +153,16 @@ function chooseNearLeg(landmarks, width, height, previousSide = null) {
 
   if (leftScore < 60 && rightScore < 60) return null;
 
-  let chosen = left.metrics.legSize >= right.metrics.legSize ? left : right;
+  let chosen = left.metrics.meanZ <= right.metrics.meanZ ? left : right;
 
   if (previousSide) {
     const prev = previousSide === "left" ? left : right;
     const alt = previousSide === "left" ? right : left;
     const prevGood = qualityScore(prev, width, height);
     const altGood = qualityScore(alt, width, height);
-    if (prevGood >= 60 && prev.metrics.legSize >= alt.metrics.legSize * 0.88) {
+    if (prevGood >= 60 && Math.abs(prev.metrics.meanZ - alt.metrics.meanZ) < 0.08) {
+      chosen = prev;
+    } else if (prevGood >= 60 && prev.metrics.meanZ <= alt.metrics.meanZ + 0.03) {
       chosen = prev;
     } else if (altGood >= 60) {
       chosen = alt;
@@ -605,3 +610,4 @@ export default function App() {
     </div>
   );
 }
+
