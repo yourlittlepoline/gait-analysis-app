@@ -192,18 +192,39 @@ function footRelativeToProgression(ankle, footPoint, line) {
 }
 
 function phaseScore(metrics, phaseKey) {
-  const norm = PHASES[phaseKey].norm;
+  const shankForward = Math.max(0, metrics.shankAngle);
+
   if (phaseKey === "loadingResponse") {
-    return Math.abs(metrics.knee - norm.knee) * 1.2 + Math.abs(metrics.footProgression - norm.footProgression) + Math.abs(metrics.ankle - norm.ankle);
+    return (
+      Math.abs(metrics.knee - 15) * 1.4 +
+      Math.abs(metrics.ankle - 5) +
+      Math.abs(shankForward - 8) * 0.8 +
+      Math.abs(metrics.footProgression) * 0.6
+    );
   }
   if (phaseKey === "midStance") {
-    return Math.abs(metrics.knee - norm.knee) + Math.abs(metrics.ankle - norm.ankle) + Math.abs(metrics.hip - norm.hip) * 0.8;
+    return (
+      Math.abs(metrics.knee - 5) * 1.2 +
+      Math.abs(shankForward - 5) * 1.5 +
+      Math.abs(metrics.ankle - 5) +
+      Math.abs(metrics.hip) * 0.7
+    );
   }
   if (phaseKey === "terminalStance") {
-    return Math.abs(metrics.ankle - norm.ankle) * 1.2 + Math.abs(metrics.hip - norm.hip) + Math.abs(metrics.knee - norm.knee);
+    return (
+      Math.abs(metrics.ankle - 10) * 1.4 +
+      Math.abs(shankForward - 15) * 1.6 +
+      Math.abs(metrics.knee) +
+      Math.abs(metrics.hip + 10) * 0.8
+    );
   }
   if (phaseKey === "swingClearance") {
-    return Math.abs(metrics.knee - norm.knee) * 0.9 + Math.abs(metrics.footProgression - norm.footProgression) + Math.max(0, 10 - metrics.toeClearance) * 2;
+    return (
+      Math.abs(metrics.knee - 60) * 1.2 +
+      Math.max(0, 12 - metrics.toeClearance) * 2.2 +
+      Math.abs(metrics.footProgression) * 0.6 +
+      Math.abs(metrics.hip - 20) * 0.7
+    );
   }
   return 999;
 }
@@ -211,19 +232,19 @@ function phaseScore(metrics, phaseKey) {
 function footAssessment(metrics, phaseKey) {
   if (phaseKey === "swingClearance") {
     if (metrics.toeClearance < 8) return `Стопа: низкий clearance, риск зацепа · clearance ≈ ${metrics.toeClearance.toFixed(0)} px`;
-    if (metrics.footProgression < -10) return `Стопа: стопа свисает вниз в swing · угол ≈ ${metrics.footProgression.toFixed(0)}°`;
+    if (metrics.footProgression < -10) return `Стопа: стопа свисает вниз в swing · угол к линии шага ≈ ${metrics.footProgression.toFixed(0)}°`;
     return `Стопа: clearance выглядит приемлемо · clearance ≈ ${metrics.toeClearance.toFixed(0)} px`;
   }
   if (phaseKey === "loadingResponse") {
-    if (metrics.footProgression < -12) return `Стопа: выраженная plantarflexed посадка · угол ≈ ${metrics.footProgression.toFixed(0)}°`;
-    if (metrics.footProgression > 10) return `Стопа: слишком dorsiflexed контакт · угол ≈ ${metrics.footProgression.toFixed(0)}°`;
-    return `Стопа: контакт ближе к ожидаемому · угол ≈ ${metrics.footProgression.toFixed(0)}°`;
+    if (metrics.footProgression < -12) return `Стопа: выраженная plantarflexed посадка · угол к линии шага ≈ ${metrics.footProgression.toFixed(0)}°`;
+    if (metrics.footProgression > 10) return `Стопа: слишком dorsiflexed контакт · угол к линии шага ≈ ${metrics.footProgression.toFixed(0)}°`;
+    return `Стопа: контакт ближе к ожидаемому · угол к линии шага ≈ ${metrics.footProgression.toFixed(0)}°`;
   }
   if (phaseKey === "terminalStance") {
-    if (metrics.ankle < 4) return `Стопа: мало продвижения над стопой / слабый push-off · угол ≈ ${metrics.footProgression.toFixed(0)}°`;
-    return `Стопа: push-off выглядит приемлемо · угол ≈ ${metrics.footProgression.toFixed(0)}°`;
+    if (metrics.ankle < 4) return `Стопа: мало продвижения над стопой / слабый push-off · угол к линии шага ≈ ${metrics.footProgression.toFixed(0)}°`;
+    return `Стопа: push-off выглядит приемлемо · угол к линии шага ≈ ${metrics.footProgression.toFixed(0)}°`;
   }
-  return `Стопа: оцениваем как опорную стабильность · угол ≈ ${metrics.footProgression.toFixed(0)}°`;
+  return `Стопа: опорная стабильность / ориентация к линии шага ≈ ${metrics.footProgression.toFixed(0)}°`;
 }
 
 function makeText(metrics, phaseKey, side) {
@@ -235,6 +256,7 @@ function makeText(metrics, phaseKey, side) {
     hip: `Таз: видео ≈ ${metrics.hip.toFixed(0)}°, норма ${ref.hip}°`,
     knee: `Колено: видео ≈ ${metrics.knee.toFixed(0)}°, норма ${ref.knee}°`,
     ankle: `Голеностоп: видео ≈ ${metrics.ankle.toFixed(0)}°, норма ${ref.ankle}°`,
+    shank: `Голень: наклон вперёд ≈ ${Math.max(0, metrics.shankAngle).toFixed(0)}°`,
     foot: footAssessment(metrics, phaseKey),
   };
 }
@@ -348,8 +370,8 @@ export default function App() {
 
     if (progression?.start && progression?.end) {
       line(
-        { x: 18, y: progression.start.y },
-        { x: canvas.width - 18, y: progression.end.y },
+        progression.start,
+        progression.end,
         "#ef4444",
         2
       );
@@ -367,6 +389,7 @@ export default function App() {
     if (p.hip) ctx.fillText(`${frame.metrics.hip.toFixed(0)}°`, p.hip.x + 8, p.hip.y - 8);
     if (p.knee) ctx.fillText(`${frame.metrics.knee.toFixed(0)}°`, p.knee.x + 8, p.knee.y - 8);
     if (p.ankle) ctx.fillText(`${frame.metrics.ankle.toFixed(0)}°`, p.ankle.x + 8, p.ankle.y - 8);
+    if (p.knee) ctx.fillText(`голень ${Math.max(0, frame.metrics.shankAngle).toFixed(0)}°`, p.knee.x + 12, p.knee.y + 18);
 
     ctx.fillStyle = "rgba(2, 6, 23, 0.8)";
     ctx.fillRect(12, 12, 250, 44);
@@ -599,6 +622,8 @@ export default function App() {
               <div>{currentFrame?.text?.knee}</div>
               <div style={{ fontWeight: 700 }}>Голеностоп</div>
               <div>{currentFrame?.text?.ankle}</div>
+              <div style={{ fontWeight: 700 }}>Голень</div>
+              <div>{currentFrame?.text?.shank}</div>
               <div style={{ fontWeight: 700 }}>Стопа</div>
               <div>{currentFrame?.text?.foot}</div>
             </div>
@@ -610,4 +635,3 @@ export default function App() {
     </div>
   );
 }
-
