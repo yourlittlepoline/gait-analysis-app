@@ -721,6 +721,8 @@ landmarks = mergeLandmarksWithMarkers(
 const leg = chooseNearLeg(landmarks, canvas.width, canvas.height, frame.side);
     if (!leg) return;
     const p = leg.points;
+    const markerGroups = detectMarkersByColor(video, canvas.width, canvas.height);
+const markerLeg = assignMarkersToLeg(markerGroups);
 
     const line = (a, b, color = "#38bdf8", width = 5) => {
       if (!a || !b) return;
@@ -739,6 +741,32 @@ const leg = chooseNearLeg(landmarks, canvas.width, canvas.height, frame.side);
       ctx.fillStyle = color;
       ctx.fill();
     };
+    const markerDot = (a, color = "#22c55e") => {
+  if (!a) return;
+  ctx.beginPath();
+  ctx.arc(a.x, a.y, 7, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+};
+
+const markerLine = (a, b, color = "#f43f5e") => {
+  if (!a || !b) return;
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = color;
+  ctx.stroke();
+};
+
+if (markerLeg) {
+  markerDot(markerLeg.hip, "#ef4444");    // таз
+  markerDot(markerLeg.knee, "#22c55e");   // колено
+  markerDot(markerLeg.toe, "#3b82f6");    // стопа
+
+  markerLine(markerLeg.hip, markerLeg.knee, "#f59e0b");
+  markerLine(markerLeg.knee, markerLeg.toe, "#f59e0b");
+}
 
     if (progression?.start && progression?.end) {
       line(progression.start, progression.end, "#ef4444", 2);
