@@ -190,7 +190,7 @@ function detectColorMarkers(videoEl, width, height) {
   }
 
   return clusters
-    .filter((c) => c.points.length > 12)
+    .filter((c) => c.points.length > 30)
     .map((c) => ({
       x: c.cx,
       y: c.cy,
@@ -222,14 +222,15 @@ function mergeLandmarksWithMarkers(landmarks, markerLeg, side, width, height) {
 
   const replacePoint = (idx, point) => {
     if (!point) return;
-    merged[idx] = {
-      ...(merged[idx] || {}),
-      x: point.x / width,
-      y: point.y / height,
-      z: merged[idx]?.z ?? 0,
-      visibility: 0.99,
-    };
-  };
+    const alpha = 0.3; // marker вес
+
+merged[idx] = {
+  ...(merged[idx] || {}),
+  x: merged[idx].x * (1 - alpha) + (point.x / width) * alpha,
+  y: merged[idx].y * (1 - alpha) + (point.y / height) * alpha,
+  z: merged[idx]?.z ?? 0,
+  visibility: 0.99,
+};
 
   if (side === "left") {
     replacePoint(LANDMARKS.leftHip, markerLeg.hip);
