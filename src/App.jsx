@@ -134,6 +134,119 @@ function extractLeg(landmarks, side, width, height) {
     },
   };
 }
+function detectColorMarkers(videoEl, width, height) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(videoEl, 0, 0, width, height);
+
+  const frame = ctx.getImageData(0, 0, width, height);
+  const data = frame.data;
+
+  // Пример для ярко-зелёных маркеров
+  const points = [];
+
+  for (let y = 0; y < height; y += 2) {
+    for (let x = 0; x < width; x += 2) {
+      const i = (y * width + x) * 4;
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+
+      const isGreen = g > 150 && r < 120 && b < 120 && g > r * 1.2 && g > b * 1.2;
+      if (isGreen) points.push({ x, y });
+    }
+  }
+
+  if (!points.length) return [];
+
+  // Очень грубая кластеризация по близости
+  const clusters = [];
+  const radius = 18;
+
+  for (const p of points) {
+    let found = false;
+
+    for (const cluster of clusters) {
+      const dx = cluster.cx - p.x;
+      const dy = cluster.cy - p.y;
+      if (dx * dx + dy * dy < radius * radius) {
+        cluster.points.push(p);
+        cluster.cx = cluster.points.reduce((s, q) => s + q.x, 0) / cluster.points.length;
+        cluster.cy = cluster.points.reduce((s, q) => s + q.y, 0) / cluster.points.length;
+        found = true;
+        break;
+      }
+    }
+
+    if (!found) {
+      clusters.push({
+        points: [p],
+        cx: p.x,
+        cy: p.y,
+      });
+    }
+  }
+
+  return clusters
+    .filter((c) => c.points.length > 12)
+    .map((c) => ({
+      x: c.cx,
+      y: c.cy,
+      size: c.points.length,
+    }));
+}
+
+function assignMarkersToLeg(markerPoints) {
+  if (!markerPoints || markerPoints.length < 4) return null;
+
+  // Сортируем сверху вниз
+  const sorted = [...markerPoints].sort((a, b) => a.y - b.y);
+
+  // Очень грубый MVP:
+  // 0 = hip, 1 = knee, 2 = ankle, 3 = toe
+  const hip = sorted[0] || null;
+  const knee = sorted[1] || null;
+  const ankle = sorted[2] || null;
+  const toe = sorted[3] || null;
+  const heel = ankle && toe ? { x: ankle.x - (toe.x - ankle.x) * 0.4, y: ankle.y + 6 } : null;
+
+  return { hip, knee, ankle, heel, toe };
+}
+
+function mergeLandmarksWithMarkers(landmarks, markerLeg, side, width, height) {
+  if (!markerLeg) return landmarks;
+
+  const merged = landmarks.map((p) => ({ ...p }));
+
+  const replacePoint = (idx, point) => {
+    if (!point) return;
+    merged[idx] = {
+      ...(merged[idx] || {}),
+      x: point.x / width,
+      y: point.y / height,
+      z: merged[idx]?.z ?? 0,
+      visibility: 0.99,
+    };
+  };
+
+  if (side === "left") {
+    replacePoint(LANDMARKS.leftHip, markerLeg.hip);
+    replacePoint(LANDMARKS.leftKnee, markerLeg.knee);
+    replacePoint(LANDMARKS.leftAnkle, markerLeg.ankle);
+    replacePoint(LANDMARKS.leftHeel, markerLeg.heel);
+    replacePoint(LANDMARKS.leftFootIndex, markerLeg.toe);
+  } else {
+    replacePoint(LANDMARKS.rightHip, markerLeg.hip);
+    replacePoint(LANDMARKS.rightKnee, markerLeg.knee);
+    replacePoint(LANDMARKS.rightAnkle, markerLeg.ankle);
+    replacePoint(LANDMARKS.rightHeel, markerLeg.heel);
+    replacePoint(LANDMARKS.rightFootIndex, markerLeg.toe);
+  }
+
+  return merged;
+}
 
 function qualityScore(leg, width, height) {
   if (!leg) return 0;
@@ -202,34 +315,34 @@ function phaseScore(metrics, phaseKey) {
 
   if (phaseKey === "loadingResponse") {
     return (
-      Math.abs(metrics.knee - 15) * 1.4 +
-      Math.abs(metrics.ankle - 5) +
-      Math.abs(shankForward - 8) * 0.8 +
-      Math.abs(metrics.footProgression) * 0.6
+      Math.abs(metrics.knee - 15) * 1.6 +
+Math.abs(metrics.ankle - 5) * 0.35 +
+Math.abs(shankForward - 8) * 1.0 +
+Math.abs(metrics.footProgression) * 0.15
     );
   }
   if (phaseKey === "midStance") {
     return (
-      Math.abs(metrics.knee - 5) * 1.2 +
-      Math.abs(shankForward - 5) * 1.5 +
-      Math.abs(metrics.ankle - 5) +
-      Math.abs(metrics.hip) * 0.7
+      Math.abs(metrics.knee - 5) * 1.5 +
+Math.abs(shankForward - 5) * 1.6 +
+Math.abs(metrics.ankle - 5) * 0.3 +
+Math.abs(metrics.hip) * 0.8
     );
   }
   if (phaseKey === "terminalStance") {
     return (
-      Math.abs(metrics.ankle - 10) * 1.4 +
-      Math.abs(shankForward - 15) * 1.6 +
-      Math.abs(metrics.knee) +
-      Math.abs(metrics.hip + 10) * 0.8
+      Math.abs(metrics.ankle - 10) * 0.4 +
+Math.abs(shankForward - 15) * 1.8 +
+Math.abs(metrics.knee) * 1.2 +
+Math.abs(metrics.hip + 10) * 0.9
     );
   }
   if (phaseKey === "swingClearance") {
     return (
-      Math.abs(metrics.knee - 60) * 1.2 +
-      Math.max(0, 12 - metrics.toeClearance) * 2.2 +
-      Math.abs(metrics.footProgression) * 0.6 +
-      Math.abs(metrics.hip - 20) * 0.7
+      Math.abs(metrics.knee - 60) * 1.5 +
+Math.max(0, 12 - metrics.toeClearance) * 0.8 +
+Math.abs(metrics.footProgression) * 0.15 +
+Math.abs(metrics.hip - 20) * 0.8
     );
   }
   return 999;
@@ -257,16 +370,7 @@ if (metrics.isSustainedContact) {
     ranked: [],
   };
 }
-  if (!metrics.isFootOnGround) {
-  return {
-    bestPhase: "swingClearance",
-    bestCost: 0,
-    secondPhase: null,
-    secondCost: 0,
-    confidence: 0.9,
-    ranked: [],
-  };
-}
+
   const ranked = Object.keys(PHASES)
     .map((phaseKey) => ({
       phaseKey,
@@ -601,7 +705,19 @@ export default function App() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    const leg = chooseNearLeg(frame.landmarks, canvas.width, canvas.height, frame.side);
+    let landmarks = frame.landmarks;
+const markerPoints = detectColorMarkers(video, canvas.width, canvas.height);
+const markerLeg = assignMarkersToLeg(markerPoints);
+
+landmarks = mergeLandmarksWithMarkers(
+  landmarks,
+  markerLeg,
+  frame.side,
+  canvas.width,
+  canvas.height
+);
+
+const leg = chooseNearLeg(landmarks, canvas.width, canvas.height, frame.side);
     if (!leg) return;
     const p = leg.points;
 
@@ -703,11 +819,29 @@ export default function App() {
       });
 
       const result = model.detectForVideo(video, performance.now());
-      const landmarks = result?.landmarks?.[0];
-      if (!landmarks) continue;
+let landmarks = result?.landmarks?.[0];
+if (!landmarks) continue;
 
-      const leg = chooseNearLeg(landmarks, width, height, lockedSide);
-      if (!leg) continue;
+// 1. Сначала MediaPipe решает, какая нога ближняя
+const rawLeg = chooseNearLeg(landmarks, width, height, lockedSide);
+if (!rawLeg) continue;
+
+// 2. Затем ищем цветные маркеры на кадре
+const markerPoints = detectColorMarkers(video, width, height);
+const markerLeg = assignMarkersToLeg(markerPoints);
+
+// 3. Подменяем шумные точки MediaPipe маркерами
+landmarks = mergeLandmarksWithMarkers(
+  landmarks,
+  markerLeg,
+  rawLeg.side,
+  width,
+  height
+);
+
+// 4. Пересчитываем ногу уже по merged landmarks
+const leg = chooseNearLeg(landmarks, width, height, lockedSide);
+if (!leg) continue;
       const score = qualityScore(leg, width, height);
       if (score < 70) continue;
 
