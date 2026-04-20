@@ -219,31 +219,31 @@ function mergeLandmarksWithMarkers(landmarks, markerLeg, side, width, height) {
   if (!markerLeg) return landmarks;
 
   const merged = landmarks.map((p) => ({ ...p }));
+  const alpha = 0.3;
 
   const replacePoint = (idx, point) => {
-    if (!point) return;
-    const alpha = 0.3; // marker вес
+    if (!point || point.size < 40) return;
+    if (!merged[idx]) return;
 
-merged[idx] = {
-  ...(merged[idx] || {}),
-  x: merged[idx].x * (1 - alpha) + (point.x / width) * alpha,
-  y: merged[idx].y * (1 - alpha) + (point.y / height) * alpha,
-  z: merged[idx]?.z ?? 0,
-  visibility: 0.99,
-};
+    merged[idx] = {
+      ...merged[idx],
+      x: merged[idx].x * (1 - alpha) + (point.x / width) * alpha,
+      y: merged[idx].y * (1 - alpha) + (point.y / height) * alpha,
+      z: merged[idx]?.z ?? 0,
+      visibility: 0.99,
+    };
+  };
 
   if (side === "left") {
     replacePoint(LANDMARKS.leftHip, markerLeg.hip);
     replacePoint(LANDMARKS.leftKnee, markerLeg.knee);
     replacePoint(LANDMARKS.leftAnkle, markerLeg.ankle);
-    replacePoint(LANDMARKS.leftHeel, markerLeg.heel);
-    replacePoint(LANDMARKS.leftFootIndex, markerLeg.toe);
+    // стопу пока НЕ подменяем маркерами
   } else {
     replacePoint(LANDMARKS.rightHip, markerLeg.hip);
     replacePoint(LANDMARKS.rightKnee, markerLeg.knee);
     replacePoint(LANDMARKS.rightAnkle, markerLeg.ankle);
-    replacePoint(LANDMARKS.rightHeel, markerLeg.heel);
-    replacePoint(LANDMARKS.rightFootIndex, markerLeg.toe);
+    // стопу пока НЕ подменяем маркерами
   }
 
   return merged;
