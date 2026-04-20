@@ -522,14 +522,35 @@ function makeText(
 ) {
   const ref = PHASES[phaseKey].norm;
 
-  let summary = "Паттерн ближе к нормотипичной интерпретации.";
+  const deviations = {
+    hip: Math.abs(metrics.hip - ref.hip),
+    knee: Math.abs(metrics.knee - ref.knee),
+    ankle: Math.abs(metrics.ankle - ref.ankle),
+    shank: Math.abs(Math.max(0, metrics.shankAngle) - ref.shank),
+  };
 
-  if (pathologySummary?.isPathological) {
+  const majorDeviationCount = Object.values(deviations).filter((d) => d >= 20).length;
+  const hugeDeviationCount = Object.values(deviations).filter((d) => d >= 35).length;
+
+  const frameLooksAbnormal =
+    hugeDeviationCount >= 1 ||
+    majorDeviationCount >= 2 ||
+    frameFlags.includes("low_toe_clearance") ||
+    frameFlags.includes("insufficient_knee_flexion_in_swing") ||
+    frameFlags.includes("possible_knee_hyperextension_pattern") ||
+    frameFlags.includes("poor_phase_fit");
+
+  let summary = "Кадр ближе к нормотипичной интерпретации.";
+
+  if (frameLooksAbnormal) {
     summary =
-      "Есть признаки атипичной биомеханики; фазовая разметка может быть ограниченно надёжной.";
+      "Этот кадр заметно отклоняется от нормы; интерпретировать его как нормотипичный нельзя.";
+  } else if (pathologySummary?.isPathological) {
+    summary =
+      "В видео есть признаки атипичной биомеханики; фазовая разметка может быть ограниченно надёжной.";
   } else if (pathologySummary?.phaseReliability === "low") {
     summary =
-      "Фазовая разметка ненадёжна: кадр плохо укладывается в типичный цикл, но это ещё не значит, что походка патологическая.";
+      "Фазовая разметка ненадёжна: кадр плохо укладывается в типичный цикл.";
   } else if (ranked && ranked.confidence < 0.1) {
     summary = "Кадр неоднозначен: он плохо отделяется от соседних фаз.";
   }
@@ -549,6 +570,11 @@ function makeText(
     warnings.push("фаза определяется неоднозначно");
   }
 
+  if (deviations.knee >= 20) warnings.push("колено сильно отклоняется от нормы");
+  if (deviations.hip >= 20) warnings.push("таз/бедро сильно отклоняется от нормы");
+  if (deviations.ankle >= 15) warnings.push("голеностоп отклоняется от нормы");
+  if (deviations.shank >= 15) warnings.push("наклон голени не соответствует фазе");
+
   return {
     phaseTitle: PHASES[phaseKey].title,
     focus: PHASES[phaseKey].focus,
@@ -558,11 +584,10 @@ function makeText(
     hip: `Таз: видео ≈ ${metrics.hip.toFixed(0)}°, норма ${ref.hip}°`,
     knee: `Колено: видео ≈ ${metrics.knee.toFixed(0)}°, норма ${ref.knee}°`,
     ankle: `Голеностоп: видео ≈ ${metrics.ankle.toFixed(0)}°, норма ${ref.ankle}°`,
-    shank: `Голень: наклон вперёд ≈ ${Math.max(
-      0,
-      metrics.shankAngle
-    ).toFixed(0)}°, норма ${ref.shank}°`,
+    shank: `Голень: наклон вперёд ≈ ${Math.max(0, metrics.shankAngle).toFixed(0)}°, норма ${ref.shank}°`,
     foot: footAssessment(metrics, phaseKey),
+    frameLooksAbnormal,
+    deviations,
   };
 }
 
@@ -662,19 +687,25 @@ function drawLegOverlay(ctx, frame, width, height) {
   ctx.fillText(`Колено: ${frame.leg.metrics.knee.toFixed(0)}°`, 24, 86);
   ctx.fillText(`Стопа heel→toe: ${frame.leg.metrics.footAngle.toFixed(0)}°`, 24, 108);
 
-  if (frame.pathologySummary?.isPathological) {
-    ctx.fillStyle = "#ef4444";
-    ctx.fillRect(width - 240, 14, 220, 34);
-    ctx.fillStyle = "white";
-    ctx.font = "600 14px Inter, Arial";
-    ctx.fillText("Возможна патологическая походка", width - 228, 36);
-  } else if (frame.pathologySummary?.phaseReliability !== "high") {
-    ctx.fillStyle = "#f59e0b";
-    ctx.fillRect(width - 250, 14, 230, 34);
-    ctx.fillStyle = "white";
-    ctx.font = "600 14px Inter, Arial";
-    ctx.fillText("Фазовая разметка ненадёжна", width - 238, 36);
-  }
+  if (frame.text?.frameLooksAbnormal) {
+  ctx.fillStyle = "#ef4444";
+  ctx.fillRect(width - 270, 14, 250, 34);
+  ctx.fillStyle = "white";
+  ctx.font = "600 14px Inter, Arial";
+  ctx.fillText("Кадр заметно отклоняется от нормы", width - 258, 36);
+} else if (frame.pathologySummary?.isPathological) {
+  ctx.fillStyle = "#ef4444";
+  ctx.fillRect(width - 240, 14, 220, 34);
+  ctx.fillStyle = "white";
+  ctx.font = "600 14px Inter, Arial";
+  ctx.fillText("Возможна патологическая походка", width - 228, 36);
+} else if (frame.pathologySummary?.phaseReliability !== "high") {
+  ctx.fillStyle = "#f59e0b";
+  ctx.fillRect(width - 250, 14, 230, 34);
+  ctx.fillStyle = "white";
+  ctx.font = "600 14px Inter, Arial";
+  ctx.fillText("Фазовая разметка ненадёжна", width - 238, 36);
+}
 
   if (frame.frameFlags?.length) {
     ctx.fillStyle = "rgba(15,23,42,0.78)";
@@ -766,10 +797,23 @@ export default function App() {
   const canAnalyze = !!videoUrl && isReady && isVideoReady && !isLoadingModel;
 
   useEffect(() => {
-    const canvas = canvasRef.current;
-    const video = videoRef.current;
-    if (!canvas || !video || !currentFrame) return;
+  const video = videoRef.current;
+  const frame = frames[selectedFrame];
 
+  if (!video || !frame || typeof frame.time !== "number") return;
+
+  const diff = Math.abs((video.currentTime || 0) - frame.time);
+  if (diff > 0.03) {
+    video.currentTime = frame.time;
+  }
+}, [selectedFrame, frames]);
+
+useEffect(() => {
+  const canvas = canvasRef.current;
+  const video = videoRef.current;
+  if (!canvas || !video || !currentFrame) return;
+
+  const draw = () => {
     const ctx = canvas.getContext("2d");
     canvas.width = video.videoWidth || 960;
     canvas.height = video.videoHeight || 540;
@@ -777,9 +821,49 @@ export default function App() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     drawLegOverlay(ctx, currentFrame, canvas.width, canvas.height);
-  }, [currentFrame, videoUrl]);
+  };
+
+  if (Math.abs((video.currentTime || 0) - currentFrame.time) > 0.03) {
+    const onSeeked = () => {
+      draw();
+      video.removeEventListener("seeked", onSeeked);
+    };
+    video.addEventListener("seeked", onSeeked);
+    video.currentTime = currentFrame.time;
+  } else {
+    draw();
+  }
+}, [currentFrame, videoUrl]);
+
+  useEffect(() => {
+  const canvas = canvasRef.current;
+  const video = videoRef.current;
+  if (!canvas || !video || !currentFrame) return;
+
+  const draw = () => {
+    const ctx = canvas.getContext("2d");
+    canvas.width = video.videoWidth || 960;
+    canvas.height = video.videoHeight || 540;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    drawLegOverlay(ctx, currentFrame, canvas.width, canvas.height);
+  };
+
+  if (Math.abs((video.currentTime || 0) - currentFrame.time) > 0.03) {
+    const onSeeked = () => {
+      draw();
+      video.removeEventListener("seeked", onSeeked);
+    };
+    video.addEventListener("seeked", onSeeked);
+    video.currentTime = currentFrame.time;
+  } else {
+    draw();
+  }
+}, [currentFrame, videoUrl]);
 
   const summaryText = useMemo(() => {
+  if (!currentFrame) {
     if (!pathologySummary) return null;
 
     if (pathologySummary.isPathological) {
@@ -803,7 +887,38 @@ export default function App() {
       tone: "#14532d",
       bg: "#dcfce7",
     };
-  }, [pathologySummary]);
+  }
+
+  if (currentFrame.text?.frameLooksAbnormal) {
+    return {
+      title: "Выбранный кадр заметно отклоняется от нормы",
+      tone: "#7f1d1d",
+      bg: "#fee2e2",
+    };
+  }
+
+  if (pathologySummary?.isPathological) {
+    return {
+      title: "В видео есть признаки патологической / атипичной походки",
+      tone: "#7f1d1d",
+      bg: "#fee2e2",
+    };
+  }
+
+  if (pathologySummary?.phaseReliability !== "high") {
+    return {
+      title: "Фазовая разметка ограниченно надёжна",
+      tone: "#78350f",
+      bg: "#fef3c7",
+    };
+  }
+
+  return {
+    title: "Выбранный кадр ближе к нормотипичному",
+    tone: "#14532d",
+    bg: "#dcfce7",
+  };
+}, [pathologySummary, currentFrame]);
 
   async function analyzeVideo() {
     try {
@@ -930,9 +1045,6 @@ export default function App() {
       setSelectedFrame(0);
       setStatus("Анализ завершён");
 
-      if (video.duration) {
-        video.currentTime = 0;
-      }
     } catch (e) {
       console.error("Analyze error:", e);
       setError(`Ошибка анализа видео: ${e?.message || "unknown error"}`);
