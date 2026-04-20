@@ -571,18 +571,32 @@ async function loadPoseLandmarker() {
   const { FilesetResolver, PoseLandmarker } = tasksVision;
 
   const filesetResolver = await FilesetResolver.forVisionTasks(
-    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
   );
 
-  return PoseLandmarker.createFromOptions(filesetResolver, {
-    baseOptions: {
-      modelAssetPath:
-        "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
-      delegate: "GPU",
-    },
-    runningMode: "VIDEO",
-    numPoses: 1,
-  });
+  try {
+    return await PoseLandmarker.createFromOptions(filesetResolver, {
+      baseOptions: {
+        modelAssetPath:
+          "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+        delegate: "GPU",
+      },
+      runningMode: "VIDEO",
+      numPoses: 1,
+    });
+  } catch (gpuError) {
+    console.warn("GPU delegate failed, fallback to CPU", gpuError);
+
+    return await PoseLandmarker.createFromOptions(filesetResolver, {
+      baseOptions: {
+        modelAssetPath:
+          "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+        delegate: "CPU",
+      },
+      runningMode: "VIDEO",
+      numPoses: 1,
+    });
+  }
 }
 
 function drawPoint(ctx, p, color = "#22c55e", r = 5) {
@@ -637,7 +651,7 @@ function drawLegOverlay(ctx, frame, width, height) {
   }
 
   ctx.fillStyle = "rgba(15,23,42,0.75)";
-  ctx.fillRect(14, 14, 360, 116);
+  ctx.fillRect(14, 14, 380, 120);
 
   ctx.fillStyle = "white";
   ctx.font = "600 18px Inter, Arial";
@@ -667,11 +681,7 @@ function drawLegOverlay(ctx, frame, width, height) {
     ctx.fillRect(14, height - 70, width - 28, 52);
     ctx.fillStyle = "#f8fafc";
     ctx.font = "13px Inter, Arial";
-    ctx.fillText(
-      `Предупреждения: ${frame.text.warnings}`,
-      24,
-      height - 38
-    );
+    ctx.fillText(`Предупреждения: ${frame.text.warnings}`, 24, height - 38);
   }
 }
 
@@ -708,6 +718,7 @@ export default function App() {
   const [videoUrl, setVideoUrl] = useState("");
   const [isReady, setIsReady] = useState(false);
   const [isLoadingModel, setIsLoadingModel] = useState(false);
+  const [isVideoReady, setIsVideoReady] = useState(false);
   const [status, setStatus] = useState("Загрузите видео");
   const [error, setError] = useState("");
   const [frames, setFrames] = useState([]);
@@ -720,20 +731,27 @@ export default function App() {
     async function init() {
       try {
         setIsLoadingModel(true);
+        setError("");
         setStatus("Загрузка модели...");
-        poseLandmarkerRef.current = await loadPoseLandmarker();
-        if (!cancelled) {
-          setIsReady(true);
-          setStatus("Модель готова");
-        }
+
+        const poseLandmarker = await loadPoseLandmarker();
+
+        if (cancelled) return;
+
+        poseLandmarkerRef.current = poseLandmarker;
+        setIsReady(true);
+        setStatus("Модель готова");
       } catch (e) {
-        console.error(e);
+        console.error("Model init error:", e);
         if (!cancelled) {
-          setError("Не удалось загрузить MediaPipe model");
+          setError(`Не удалось загрузить модель: ${e?.message || "unknown error"}`);
           setStatus("Ошибка загрузки модели");
+          setIsReady(false);
         }
       } finally {
-        if (!cancelled) setIsLoadingModel(false);
+        if (!cancelled) {
+          setIsLoadingModel(false);
+        }
       }
     }
 
@@ -745,6 +763,7 @@ export default function App() {
   }, []);
 
   const currentFrame = frames[selectedFrame] ?? null;
+  const canAnalyze = !!videoUrl && isReady && isVideoReady && !isLoadingModel;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -796,17 +815,20 @@ export default function App() {
       const video = videoRef.current;
       const poseLandmarker = poseLandmarkerRef.current;
 
-      if (!video || !poseLandmarker) {
-        setError("Видео или модель не готовы");
+      if (!poseLandmarker) {
+        setError("Модель ещё не готова");
         return;
       }
 
-      if (!video.videoWidth || !video.videoHeight) {
-        setError("Видео ещё не успело загрузиться");
+      if (!video) {
+        setError("Видео не найдено");
         return;
       }
 
-      setStatus("Анализ видео...");
+      if (!isVideoReady || !video.videoWidth || !video.videoHeight) {
+        setError("Видео ещё не загрузило метаданные");
+        return;
+      }
 
       const width = video.videoWidth;
       const height = video.videoHeight;
@@ -816,6 +838,8 @@ export default function App() {
         setError("Не удалось получить длительность видео");
         return;
       }
+
+      setStatus("Анализ видео...");
 
       const sampleCount = 8;
       const timePoints = Array.from({ length: sampleCount }, (_, i) =>
@@ -833,12 +857,14 @@ export default function App() {
             video.removeEventListener("seeked", onSeeked);
             resolve();
           };
-          video.addEventListener("seeked", onSeeked);
+          video.addEventListener("seeked", onSeeked, { once: true });
           video.currentTime = t;
         });
 
-        const result = poseLandmarker.detectForVideo(video, performance.now());
+        const nowMs = Math.round(t * 1000);
+        const result = poseLandmarker.detectForVideo(video, nowMs);
         const landmarks = result?.landmarks?.[0];
+
         if (!landmarks) continue;
 
         const leg = chooseNearLeg(landmarks, width, height, previousSide);
@@ -903,9 +929,13 @@ export default function App() {
       setPathologySummary(pathology);
       setSelectedFrame(0);
       setStatus("Анализ завершён");
+
+      if (video.duration) {
+        video.currentTime = 0;
+      }
     } catch (e) {
-      console.error(e);
-      setError("Ошибка анализа видео");
+      console.error("Analyze error:", e);
+      setError(`Ошибка анализа видео: ${e?.message || "unknown error"}`);
       setStatus("Ошибка");
     }
   }
@@ -914,6 +944,10 @@ export default function App() {
     const file = event.target.files?.[0];
     if (!file) return;
 
+    if (videoUrl) {
+      URL.revokeObjectURL(videoUrl);
+    }
+
     const url = URL.createObjectURL(file);
     setVideoUrl(url);
     setFrames([]);
@@ -921,6 +955,7 @@ export default function App() {
     setPathologySummary(null);
     setStatus("Видео загружено");
     setError("");
+    setIsVideoReady(false);
   }
 
   return (
@@ -965,8 +1000,7 @@ export default function App() {
                 Анализ походки по видео
               </h1>
               <div style={{ opacity: 0.7, marginTop: 6 }}>
-                Ближняя нога, heel-to-toe стопа, фазовая разметка и флаг
-                патологичности
+                Ближняя нога, heel-to-toe стопа, фазовая разметка и флаг патологичности
               </div>
             </div>
 
@@ -995,14 +1029,14 @@ export default function App() {
 
               <button
                 onClick={analyzeVideo}
-                disabled={!videoUrl || !isReady}
+                disabled={!canAnalyze}
                 style={{
-                  background: !videoUrl || !isReady ? "#334155" : "#16a34a",
+                  background: !canAnalyze ? "#334155" : "#16a34a",
                   color: "white",
                   border: "none",
                   padding: "12px 16px",
                   borderRadius: 14,
-                  cursor: !videoUrl || !isReady ? "not-allowed" : "pointer",
+                  cursor: !canAnalyze ? "not-allowed" : "pointer",
                   fontWeight: 700,
                 }}
               >
@@ -1025,6 +1059,13 @@ export default function App() {
                   ref={videoRef}
                   src={videoUrl}
                   controls
+                  playsInline
+                  onLoadedMetadata={() => {
+                    setIsVideoReady(true);
+                    setStatus((prev) =>
+                      prev === "Модель готова" ? "Видео и модель готовы" : prev
+                    );
+                  }}
                   style={{
                     width: "100%",
                     maxHeight: 420,
@@ -1067,7 +1108,13 @@ export default function App() {
           >
             <CheckCircle2 size={16} />
             <span>
-              {isLoadingModel ? "Модель загружается..." : status}
+              {isLoadingModel
+                ? "Модель загружается..."
+                : isReady && isVideoReady
+                ? "Видео и модель готовы"
+                : isReady
+                ? "Модель готова"
+                : status}
             </span>
           </div>
 
