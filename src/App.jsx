@@ -373,55 +373,89 @@ function AnalysisScreen({
 
   return (
     <div className="min-h-screen bg-slate-950 p-4 md:p-6 text-white">
-      <div className="mx-auto max-w-5xl">
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_330px] gap-4 items-start">
-          <main className="rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl">
-            <header className="mb-3">
-              <h1 className="text-xl md:text-2xl font-bold">Анализ походки по видео</h1>
-              <p className="mt-1 text-xs md:text-sm text-slate-400">
-                Ближняя нога, heel-to-toe стопа, фазовая разметка и флаг патологичности
-              </p>
-            </header>
+      <div className="mx-auto max-w-[980px]">
+        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_330px] gap-4 items-start">
+          {/* LEFT: selected frame + frame strip */}
+          <section className="space-y-4">
+            <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl">
+              <header className="mb-3">
+                <h1 className="text-xl md:text-2xl font-bold">Анализ походки по видео</h1>
+                <p className="mt-1 text-xs md:text-sm text-slate-400">
+                  Ближняя нога, heel-to-toe стопа, фазовая разметка и флаг патологичности
+                </p>
+              </header>
 
-            <div className="mb-3 flex flex-wrap gap-2">
-              <button onClick={onBackToFrames} className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold hover:bg-blue-500">
-                ← К выбору кадров
-              </button>
-              <div className="rounded-xl bg-slate-800 px-3 py-2 text-sm text-slate-200">
-                Выбранных кадров: {results.length}
+              <div className="mb-3 flex flex-wrap gap-2">
+                <button onClick={onBackToFrames} className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold hover:bg-blue-500">
+                  ← К выбору кадров
+                </button>
+                <div className="rounded-xl bg-slate-800 px-3 py-2 text-sm text-slate-200">
+                  Выбранных кадров: {results.length}
+                </div>
+              </div>
+
+              <div className="relative overflow-hidden rounded-xl border border-slate-700 bg-black">
+                <canvas ref={canvasRef} className="block w-full h-auto" />
+                {!currentMetrics && (
+                  <div className="flex aspect-video items-center justify-center text-slate-400">
+                    Выбери кадр из списка ниже
+                  </div>
+                )}
+
+                {currentFrame && (
+                  <div className="absolute left-3 top-3 max-w-[70%] rounded-xl bg-slate-950/80 p-3 text-xs md:text-sm backdrop-blur">
+                    <div className="font-bold">Фаза: {currentPhase?.label}</div>
+                    <div>Стопа: ближняя</div>
+                    <div>Колено: {currentMetrics?.leftKnee ?? "—"}° / {currentMetrics?.rightKnee ?? "—"}°</div>
+                    <div>Confidence: {currentMetrics?.confidence ?? "—"}%</div>
+                  </div>
+                )}
+
+                {currentAnalysis.score > 0 && (
+                  <div className="absolute right-3 top-3 rounded bg-rose-500 px-3 py-2 text-xs font-bold text-white">
+                    Кадр отклоняется от нормы
+                  </div>
+                )}
               </div>
             </div>
 
-            <div className="relative overflow-hidden rounded-xl border border-slate-700 bg-black">
-              <canvas ref={canvasRef} className="block w-full h-auto" />
-              {!currentMetrics && (
-                <div className="flex aspect-video items-center justify-center text-slate-400">
-                  Выбери кадр справа
-                </div>
-              )}
+            <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h2 className="font-semibold">Кадры анализа</h2>
+                <div className="text-xs text-slate-400">клик = открыть кадр</div>
+              </div>
 
-              {currentFrame && (
-                <div className="absolute left-3 top-3 rounded-xl bg-slate-950/80 p-3 text-xs md:text-sm backdrop-blur">
-                  <div className="font-bold">Фаза: {currentPhase?.label}</div>
-                  <div>Кадр: {currentFrame.id + 1}</div>
-                  <div>Confidence: {currentMetrics?.confidence ?? "—"}%</div>
-                  <div>Pathology score: {currentAnalysis.score}</div>
-                </div>
-              )}
-
-              {currentAnalysis.score > 0 && (
-                <div className="absolute right-3 top-3 rounded bg-rose-500 px-3 py-2 text-xs font-bold text-white">
-                  Кадр отклоняется от нормы
-                </div>
-              )}
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                {results.map((r, index) => (
+                  <button
+                    key={r.id}
+                    onClick={() => onSetCurrentResult(r)}
+                    className={`overflow-hidden rounded-xl border-2 bg-slate-950 text-left transition ${
+                      currentFrame?.id === r.id
+                        ? "border-white"
+                        : r.analysis.score >= 4
+                          ? "border-rose-600"
+                          : r.analysis.score > 0
+                            ? "border-amber-500"
+                            : "border-emerald-600"
+                    }`}
+                  >
+                    <div className="relative">
+                      <img src={r.dataUrl} alt={`Кадр ${r.id + 1}`} className="aspect-[3/4] w-full object-cover" />
+                      <div className="absolute left-1 top-1 rounded bg-black/75 px-1.5 py-0.5 text-[10px]">Кадр {index + 1}</div>
+                    </div>
+                    <div className="p-2 text-[11px] text-slate-300">
+                      <div className="truncate font-semibold text-white">{r.analysis.phase?.label}</div>
+                      <div>score {r.analysis.score}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
+          </section>
 
-            <div className="mt-3 rounded-xl bg-slate-950 p-3 text-xs text-slate-300">
-              {status}
-            </div>
-          </main>
-
-          <aside className="space-y-3">
+          {/* RIGHT: analysis panel */}
+          <aside className="space-y-3 lg:sticky lg:top-6">
             <div className={`rounded-2xl border p-3 ${currentAnalysis.score >= 4 ? "border-rose-500 bg-rose-950/40" : currentAnalysis.score > 0 ? "border-rose-300 bg-rose-100 text-slate-950" : "border-emerald-700 bg-emerald-950/30"}`}>
               <div className="text-sm font-bold">
                 {currentAnalysis.score > 0 ? "Выбранный кадр заметно отклоняется от нормы" : "Выбранный кадр ближе к норме"}
@@ -457,7 +491,6 @@ function AnalysisScreen({
               <p className="mt-2 text-sm text-slate-300">
                 Этот кадр интерпретируется относительно выбранной фазы.
               </p>
-              <div className="mt-3 text-xs text-slate-400">Фокус: {currentPhase?.focus}</div>
 
               <select
                 value={currentFrame?.phaseId ?? DEFAULT_PHASE}
@@ -471,6 +504,7 @@ function AnalysisScreen({
               </select>
 
               <div className="mt-4 space-y-2 text-sm">
+                <div><b>Фокус:</b> {currentPhase?.focus}</div>
                 <div><b>Колено:</b> видео {currentMetrics?.leftKnee ?? "—"}° / {currentMetrics?.rightKnee ?? "—"}°, норма {currentPhase?.norms.knee.min}–{currentPhase?.norms.knee.max}°</div>
                 <div><b>Голеностоп:</b> видео {currentMetrics?.leftAnkle ?? "—"}° / {currentMetrics?.rightAnkle ?? "—"}°, норма {currentPhase?.norms.ankle.min}–{currentPhase?.norms.ankle.max}°</div>
                 <div><b>Таз:</b> видео {currentMetrics?.pelvisTilt ?? "—"}°, ориентир ближе к 0°</div>
