@@ -43,14 +43,7 @@ const LANDMARKS = {
 };
 
 const SKELETON_CONNECTIONS = [
-  // head / face simplified
-  ["leftEar", "leftEye"],
-  ["leftEye", "nose"],
-  ["nose", "rightEye"],
-  ["rightEye", "rightEar"],
-  ["mouthLeft", "mouthRight"],
-
-  // shoulders / trunk / pelvis
+  // trunk
   ["leftShoulder", "rightShoulder"],
   ["leftShoulder", "leftHip"],
   ["rightShoulder", "rightHip"],
@@ -59,16 +52,10 @@ const SKELETON_CONNECTIONS = [
   // left arm
   ["leftShoulder", "leftElbow"],
   ["leftElbow", "leftWrist"],
-  ["leftWrist", "leftIndex"],
-  ["leftWrist", "leftPinky"],
-  ["leftWrist", "leftThumb"],
 
   // right arm
   ["rightShoulder", "rightElbow"],
   ["rightElbow", "rightWrist"],
-  ["rightWrist", "rightIndex"],
-  ["rightWrist", "rightPinky"],
-  ["rightWrist", "rightThumb"],
 
   // left leg
   ["leftHip", "leftKnee"],
@@ -257,7 +244,7 @@ export default function FullSkeletonGaitAnalyzer() {
 
     points.midShoulder = midpoint(points.leftShoulder, points.rightShoulder, "midShoulder");
     points.midHip = midpoint(points.leftHip, points.rightHip, "midHip");
-    points.neck = midpoint(points.nose, points.midShoulder, "neck");
+    points.neck = midpoint(points.leftShoulder, points.rightShoulder, "neck");
 
     return points;
   }
@@ -308,7 +295,27 @@ export default function FullSkeletonGaitAnalyzer() {
     drawLine(ctx, points.midHip, points.midShoulder, COLORS.center, 5);
     drawLine(ctx, points.nose, points.midShoulder, COLORS.center, 3);
 
-    Object.keys(LANDMARKS).forEach((name) => {
+    const visibleBodyPoints = [
+      "nose",
+      "leftShoulder",
+      "rightShoulder",
+      "leftElbow",
+      "rightElbow",
+      "leftWrist",
+      "rightWrist",
+      "leftHip",
+      "rightHip",
+      "leftKnee",
+      "rightKnee",
+      "leftAnkle",
+      "rightAnkle",
+      "leftHeel",
+      "rightHeel",
+      "leftFootIndex",
+      "rightFootIndex",
+    ];
+
+    visibleBodyPoints.forEach((name) => {
       const color = name.startsWith("left")
         ? COLORS.left
         : name.startsWith("right")
@@ -430,7 +437,7 @@ export default function FullSkeletonGaitAnalyzer() {
           <div>
             <h1 className="text-2xl md:text-3xl font-bold">Full Skeleton Gait Analyzer</h1>
             <p className="text-slate-300 mt-1">
-              Разметка всего тела: голова, корпус, обе руки, таз, обе ноги, пятки и носки.
+              Разметка тела без лица: голова, корпус, обе руки, таз, обе ноги, пятки и носки.
             </p>
           </div>
 
@@ -526,4 +533,5 @@ function Metric({ label, value, muted = false }) {
     </div>
   );
 }
+
 
