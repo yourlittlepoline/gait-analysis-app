@@ -533,5 +533,3 @@ function Metric({ label, value, muted = false }) {
     </div>
   );
 }
-
-
