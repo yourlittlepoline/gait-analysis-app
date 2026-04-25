@@ -209,49 +209,88 @@ function describeNorm(value, range) {
 function classifyFrame(metrics, phaseId = DEFAULT_PHASE) {
   const phase = getPhaseById(phaseId);
   if (!metrics) {
-    return { verdict: "нет данных", score: 0, flags: ["тело не найдено"], phase, deviations: [] };
+    return {
+      verdict: "нет данных",
+      score: 0,
+      flags: ["тело не найдено"],
+      phase,
+      deviations: [],
+      zones: [],
+    };
   }
 
   const flags = [];
   const deviations = [];
+  const zones = [];
   let score = 0;
 
   if (metrics.confidence < MIN_CONFIDENCE) {
-    flags.push("низкое качество распознавания: кадр лучше не использовать для вывода");
-    deviations.push({ label: "Confidence", value: `${metrics.confidence}%`, norm: `≥${MIN_CONFIDENCE}%`, comment: "низкая уверенность модели" });
+    flags.push("кадр ненадёжный: модель плохо видит тело, не делай вывод по этому кадру");
+    deviations.push({ label: "Качество", value: `${metrics.confidence}%`, norm: `≥${MIN_CONFIDENCE}%`, comment: "низкая уверенность модели" });
+    zones.push({ area: "Качество кадра", level: "warning", note: "лучше заменить кадр" });
     score += 2;
   }
 
-  const checks = [
+  const kneeItems = [
     ["L колено", metrics.leftKnee, phase.norms.knee],
     ["R колено", metrics.rightKnee, phase.norms.knee],
+  ];
+
+  const ankleItems = [
     ["L голеностоп", metrics.leftAnkle, phase.norms.ankle],
     ["R голеностоп", metrics.rightAnkle, phase.norms.ankle],
   ];
 
-  checks.forEach(([label, value, norm]) => {
+  kneeItems.forEach(([label, value, norm]) => {
     if (isOutsideNorm(value, norm)) {
       const comment = describeNorm(value, norm);
       flags.push(`${label}: ${comment} для фазы ${phase.label}`);
       deviations.push({ label, value: `${value}°`, norm: `${norm.min}–${norm.max}°`, comment });
+      zones.push({ area: label, level: "attention", note: comment });
       score += 1;
     }
   });
 
-  if (Math.abs(metrics.pelvisTilt ?? 0) > 12) {
-    flags.push("таз заметно наклонён относительно кадра: проверь, это реальный перекос или наклон камеры");
-    deviations.push({ label: "Таз", value: `${metrics.pelvisTilt}°`, norm: "ближе к 0°", comment: "перекос/наклон кадра" });
+  ankleItems.forEach(([label, value, norm]) => {
+    if (isOutsideNorm(value, norm)) {
+      const comment = describeNorm(value, norm);
+      flags.push(`${label}: ${comment} для фазы ${phase.label}`);
+      deviations.push({ label, value: `${value}°`, norm: `${norm.min}–${norm.max}°`, comment });
+      zones.push({ area: label, level: "attention", note: comment });
+      score += 1;
+    }
+  });
+
+  const torsoFromVertical = metrics.torsoTilt === null || metrics.torsoTilt === undefined
+    ? null
+    : Math.abs(90 - Math.abs(metrics.torsoTilt));
+
+  if (torsoFromVertical !== null && torsoFromVertical > 12) {
+    flags.push(`корпус заметно наклонён: около ${torsoFromVertical}° от вертикали, проверь компенсацию корпусом`);
+    deviations.push({ label: "Корпус", value: `${torsoFromVertical}°`, norm: "до 12° от вертикали", comment: "возможная компенсация" });
+    zones.push({ area: "Корпус/спина", level: "attention", note: "наклон корпуса" });
     score += 1;
   }
 
-  if (!flags.length) flags.push(`для выбранной фазы ${phase.label} грубых отклонений по этому кадру не видно`);
+  if (Math.abs(metrics.pelvisTilt ?? 0) > 12) {
+    flags.push("таз заметно наклонён относительно кадра: проверь, это реальный перекос или наклон камеры");
+    deviations.push({ label: "Таз", value: `${metrics.pelvisTilt}°`, norm: "ближе к 0°", comment: "перекос/наклон кадра" });
+    zones.push({ area: "Таз", level: "attention", note: "наклон таза" });
+    score += 1;
+  }
+
+  if (!flags.length) {
+    flags.push(`для выбранной фазы ${phase.label} грубых отклонений по этому кадру не видно`);
+    zones.push({ area: "Общий вид", level: "ok", note: "без грубых флагов" });
+  }
 
   return {
     score,
-    verdict: score >= 4 ? "патологичность / плохой кадр" : score >= 1 ? "есть отклонения" : "ближе к норме",
+    verdict: score >= 4 ? "есть несколько зон внимания" : score >= 1 ? "есть отдельные отклонения" : "грубых отклонений не видно",
     flags,
     phase,
     deviations,
+    zones,
   };
 }
 
@@ -368,20 +407,17 @@ function AnalysisScreen({
   onUpdateFramePhase,
   onBackToFrames,
 }) {
-  const pathologyCount = results.filter((r) => r.analysis.score >= 4).length;
-  const deviationCount = results.filter((r) => r.analysis.score > 0).length;
+  const attentionCount = results.filter((r) => r.analysis.score > 0).length;
 
   return (
-    <div className="min-h-screen bg-slate-950 p-4 md:p-6 text-white">
-      <div className="mx-auto max-w-[1180px] space-y-4">
-        {/* TOP ROW: current analyzed frame + analysis panel */}
-        <div className="grid grid-cols-1 lg:grid-cols-[380px_minmax(0,1fr)] gap-4 items-start">
-          {/* LEFT: current frame */}
-          <section className="rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl">
+    <div className="min-h-screen bg-[#050816] p-4 md:p-6 text-white">
+      <div className="mx-auto max-w-[1120px]">
+        <div className="grid grid-cols-1 lg:grid-cols-[560px_360px] gap-4 items-start justify-center">
+          <section className="rounded-2xl border border-slate-700/80 bg-slate-900/90 p-4 shadow-2xl">
             <header className="mb-3">
               <h1 className="text-xl md:text-2xl font-bold">Анализ походки по видео</h1>
               <p className="mt-1 text-xs md:text-sm text-slate-400">
-                Ближняя нога, heel-to-toe стопа, фазовая разметка и флаг патологичности
+                Ближняя нога, heel-to-toe стопа, фазовая разметка и флаги по зонам
               </p>
             </header>
 
@@ -389,51 +425,49 @@ function AnalysisScreen({
               <button onClick={onBackToFrames} className="rounded-xl bg-blue-600 px-3 py-2 text-sm font-semibold hover:bg-blue-500">
                 ← К выбору кадров
               </button>
+              <div className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold">
+                Кадров: {results.length}
+              </div>
             </div>
 
             <div className="relative overflow-hidden rounded-xl border border-slate-700 bg-black">
               <canvas ref={canvasRef} className="block w-full h-auto" />
               {!currentMetrics && (
                 <div className="flex aspect-[9/16] items-center justify-center text-slate-400">
-                  Выбери кадр снизу
+                  Выбери кадр справа
                 </div>
               )}
 
               {currentFrame && (
-                <div className="absolute left-3 top-3 max-w-[75%] rounded-xl bg-slate-950/80 p-3 text-xs backdrop-blur">
+                <div className="absolute left-3 top-3 max-w-[72%] rounded-xl bg-slate-950/80 p-3 text-xs backdrop-blur">
                   <div className="font-bold">Фаза: {currentPhase?.label}</div>
-                  <div>Стопа: ближняя</div>
+                  <div>Кадр: {currentFrame.id + 1}</div>
                   <div>Колено: {currentMetrics?.leftKnee ?? "—"}° / {currentMetrics?.rightKnee ?? "—"}°</div>
-                  <div>Confidence: {currentMetrics?.confidence ?? "—"}%</div>
+                  <div>Стопа: {currentMetrics?.leftFootAngle ?? "—"}° / {currentMetrics?.rightFootAngle ?? "—"}°</div>
                 </div>
               )}
 
               {currentAnalysis.score > 0 && (
                 <div className="absolute right-3 top-3 rounded bg-rose-500 px-3 py-2 text-xs font-bold text-white">
-                  Кадр отклоняется от нормы
+                  Есть зоны внимания
                 </div>
               )}
             </div>
-
-            <div className="mt-3 rounded-xl bg-slate-950 p-3 text-xs text-slate-300">
-              {status}
-            </div>
           </section>
 
-          {/* RIGHT: analysis, always next to current frame on desktop */}
-          <aside className="rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl">
-            <div className={`mb-4 rounded-2xl border p-3 ${currentAnalysis.score >= 4 ? "border-rose-500 bg-rose-950/40" : currentAnalysis.score > 0 ? "border-rose-300 bg-rose-100 text-slate-950" : "border-emerald-700 bg-emerald-950/30"}`}>
+          <aside className="space-y-3">
+            <div className={`rounded-2xl border p-3 ${currentAnalysis.score > 0 ? "border-rose-200 bg-rose-100 text-slate-950" : "border-emerald-700 bg-emerald-950/30"}`}>
               <div className="text-sm font-bold">
-                {currentAnalysis.score > 0 ? "Выбранный кадр заметно отклоняется от нормы" : "Выбранный кадр ближе к норме"}
+                {currentAnalysis.verdict}
               </div>
               <div className="mt-1 text-xs opacity-80">
-                confidence ≈ {currentMetrics?.confidence ?? "—"}% · reliability: high · pathology score: {currentAnalysis.score}
+                confidence ≈ {currentMetrics?.confidence ?? "—"}% · attention score: {currentAnalysis.score}
               </div>
             </div>
 
-            <div className="mb-4">
-              <h2 className="mb-3 text-xl font-bold">Кадры анализа</h2>
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-3 gap-2">
+            <div className="rounded-2xl border border-slate-700/80 bg-slate-900/90 p-4">
+              <h2 className="mb-3 font-semibold">Кадры анализа</h2>
+              <div className="grid grid-cols-2 gap-2">
                 {results.map((r, index) => (
                   <button
                     key={r.id}
@@ -452,10 +486,10 @@ function AnalysisScreen({
               </div>
             </div>
 
-            <div className="mb-4">
-              <h2 className="text-xl font-bold">{currentPhase?.label}</h2>
+            <div className="rounded-2xl border border-slate-700/80 bg-slate-900/90 p-4">
+              <h2 className="text-lg font-bold">{currentPhase?.label}</h2>
               <p className="mt-2 text-sm text-slate-300">
-                Этот кадр интерпретируется относительно выбранной фазы.
+                Этот кадр не называется “патологичным целиком”. Смотрим зоны: корпус, таз, колено, стопа.
               </p>
 
               <select
@@ -469,63 +503,37 @@ function AnalysisScreen({
                 ))}
               </select>
 
-              <div className="mt-4 space-y-2 text-sm">
+              <div className="mt-4 space-y-2 text-sm text-slate-200">
                 <div><b>Фокус:</b> {currentPhase?.focus}</div>
+                <div><b>Корпус:</b> наклон от вертикали ≈ {currentMetrics?.torsoTilt === null || currentMetrics?.torsoTilt === undefined ? "—" : Math.abs(90 - Math.abs(currentMetrics.torsoTilt))}°</div>
+                <div><b>Таз:</b> видео {currentMetrics?.pelvisTilt ?? "—"}°, ориентир ближе к 0°</div>
                 <div><b>Колено:</b> видео {currentMetrics?.leftKnee ?? "—"}° / {currentMetrics?.rightKnee ?? "—"}°, норма {currentPhase?.norms.knee.min}–{currentPhase?.norms.knee.max}°</div>
                 <div><b>Голеностоп:</b> видео {currentMetrics?.leftAnkle ?? "—"}° / {currentMetrics?.rightAnkle ?? "—"}°, норма {currentPhase?.norms.ankle.min}–{currentPhase?.norms.ankle.max}°</div>
-                <div><b>Таз:</b> видео {currentMetrics?.pelvisTilt ?? "—"}°, ориентир ближе к 0°</div>
+              </div>
+
+              <div className="mt-4 rounded-xl bg-slate-950 p-3 text-sm">
+                <div className="font-semibold">Зоны внимания:</div>
+                <ul className="mt-2 space-y-1 text-slate-300">
+                  {currentAnalysis.zones?.map((zone, i) => (
+                    <li key={i}>• <b>{zone.area}:</b> {zone.note}</li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="mt-3 rounded-xl bg-slate-950 p-3 text-sm">
+                <div className="font-semibold">Подсказки:</div>
+                <ul className="mt-2 space-y-1 text-slate-300">
+                  {currentAnalysis.flags.map((flag, i) => <li key={i}>• {flag}</li>)}
+                </ul>
               </div>
             </div>
 
-            <div className="rounded-xl bg-slate-950 p-3 text-sm">
-              <div className="font-semibold">Предупреждения:</div>
-              <ul className="mt-2 space-y-1 text-slate-300">
-                {currentAnalysis.flags.map((flag, i) => <li key={i}>• {flag}</li>)}
-              </ul>
-            </div>
-
-            <div className="mt-4 rounded-xl bg-slate-950 p-3 text-sm text-slate-300">
+            <div className="rounded-2xl border border-slate-700/80 bg-slate-900/90 p-4 text-sm text-slate-300">
               <div className="font-semibold text-white">Сводка</div>
-              <div className="mt-2">Отклонения: {deviationCount}/{results.length}</div>
-              <div>Патологичность/плохой кадр: {pathologyCount}/{results.length}</div>
+              <div className="mt-2">Кадры с зонами внимания: {attentionCount}/{results.length}</div>
             </div>
           </aside>
         </div>
-
-        {/* BOTTOM ROW: all selected frames */}
-        <section className="rounded-2xl border border-slate-700 bg-slate-900 p-4 shadow-2xl">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h2 className="font-semibold">Все выбранные кадры с анализом</h2>
-            <div className="text-xs text-slate-400">клик = открыть кадр</div>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-            {results.map((r, index) => (
-              <button
-                key={r.id}
-                onClick={() => onSetCurrentResult(r)}
-                className={`overflow-hidden rounded-xl border-2 bg-slate-950 text-left transition ${
-                  currentFrame?.id === r.id
-                    ? "border-white"
-                    : r.analysis.score >= 4
-                      ? "border-rose-600"
-                      : r.analysis.score > 0
-                        ? "border-amber-500"
-                        : "border-emerald-600"
-                }`}
-              >
-                <div className="relative">
-                  <img src={r.dataUrl} alt={`Кадр ${r.id + 1}`} className="aspect-[3/4] w-full object-cover" />
-                  <div className="absolute left-1 top-1 rounded bg-black/75 px-1.5 py-0.5 text-[10px]">Кадр {index + 1}</div>
-                </div>
-                <div className="p-2 text-[11px] text-slate-300">
-                  <div className="truncate font-semibold text-white">{r.analysis.phase?.label}</div>
-                  <div>score {r.analysis.score}</div>
-                </div>
-              </button>
-            ))}
-          </div>
-        </section>
       </div>
     </div>
   );
