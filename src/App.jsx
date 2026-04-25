@@ -6,30 +6,12 @@ const MODEL_URL =
 
 const LANDMARKS = {
   nose: 0,
-  leftEyeInner: 1,
-  leftEye: 2,
-  leftEyeOuter: 3,
-  rightEyeInner: 4,
-  rightEye: 5,
-  rightEyeOuter: 6,
-  leftEar: 7,
-  rightEar: 8,
-  mouthLeft: 9,
-  mouthRight: 10,
-
   leftShoulder: 11,
   rightShoulder: 12,
   leftElbow: 13,
   rightElbow: 14,
   leftWrist: 15,
   rightWrist: 16,
-  leftPinky: 17,
-  rightPinky: 18,
-  leftIndex: 19,
-  rightIndex: 20,
-  leftThumb: 21,
-  rightThumb: 22,
-
   leftHip: 23,
   rightHip: 24,
   leftKnee: 25,
@@ -43,28 +25,24 @@ const LANDMARKS = {
 };
 
 const SKELETON_CONNECTIONS = [
-  // trunk
+  ["nose", "midShoulder"],
   ["leftShoulder", "rightShoulder"],
   ["leftShoulder", "leftHip"],
   ["rightShoulder", "rightHip"],
   ["leftHip", "rightHip"],
+  ["midShoulder", "midHip"],
 
-  // left arm
   ["leftShoulder", "leftElbow"],
   ["leftElbow", "leftWrist"],
-
-  // right arm
   ["rightShoulder", "rightElbow"],
   ["rightElbow", "rightWrist"],
 
-  // left leg
   ["leftHip", "leftKnee"],
   ["leftKnee", "leftAnkle"],
   ["leftAnkle", "leftHeel"],
   ["leftHeel", "leftFootIndex"],
   ["leftAnkle", "leftFootIndex"],
 
-  // right leg
   ["rightHip", "rightKnee"],
   ["rightKnee", "rightAnkle"],
   ["rightAnkle", "rightHeel"],
@@ -73,44 +51,41 @@ const SKELETON_CONNECTIONS = [
 ];
 
 const COLORS = {
-  head: "#facc15",
-  trunk: "#38bdf8",
-  left: "#22c55e",
-  right: "#ef4444",
-  center: "#a855f7",
-  weak: "rgba(255,255,255,0.25)",
-  text: "#ffffff",
+  head: "#fb7185",
+  trunk: "#3b82f6",
+  leftArm: "#8b5cf6",
+  rightArm: "#38bdf8",
+  leftLeg: "#22c55e",
+  rightLeg: "#f59e0b",
+  center: "#ffffff",
+  weak: "rgba(255,255,255,0.28)",
 };
 
-function getPoint(landmarks, name, width, height) {
-  const lm = landmarks[LANDMARKS[name]];
-  if (!lm) return null;
-  return {
-    x: lm.x * width,
-    y: lm.y * height,
-    z: lm.z ?? 0,
-    visibility: lm.visibility ?? 1,
-    name,
-  };
-}
-
-function midpoint(a, b, name = "midpoint") {
+function midpoint(a, b, name) {
   if (!a || !b) return null;
   return {
     x: (a.x + b.x) / 2,
     y: (a.y + b.y) / 2,
-    z: ((a.z ?? 0) + (b.z ?? 0)) / 2,
     visibility: Math.min(a.visibility ?? 1, b.visibility ?? 1),
     name,
   };
 }
 
-function drawLine(ctx, a, b, color, width = 4) {
+function getColorForConnection(a, b) {
+  if (a.includes("Shoulder") || b.includes("Shoulder") || a.includes("Hip") || b.includes("Hip") || a.startsWith("mid") || b.startsWith("mid")) return COLORS.trunk;
+  if (a.startsWith("left") && (a.includes("Elbow") || a.includes("Wrist") || b.includes("Elbow") || b.includes("Wrist"))) return COLORS.leftArm;
+  if (a.startsWith("right") && (a.includes("Elbow") || a.includes("Wrist") || b.includes("Elbow") || b.includes("Wrist"))) return COLORS.rightArm;
+  if (a.startsWith("left") || b.startsWith("left")) return COLORS.leftLeg;
+  if (a.startsWith("right") || b.startsWith("right")) return COLORS.rightLeg;
+  return COLORS.head;
+}
+
+function drawLine(ctx, a, b, color, scale) {
   if (!a || !b) return;
-  const confidence = Math.min(a.visibility ?? 1, b.visibility ?? 1);
+  const conf = Math.min(a.visibility ?? 1, b.visibility ?? 1);
   ctx.save();
-  ctx.strokeStyle = confidence < 0.45 ? COLORS.weak : color;
-  ctx.lineWidth = confidence < 0.45 ? 2 : width;
+  ctx.strokeStyle = conf < 0.45 ? COLORS.weak : color;
+  ctx.lineWidth = Math.max(2, 4 * scale);
   ctx.lineCap = "round";
   ctx.beginPath();
   ctx.moveTo(a.x, a.y);
@@ -119,76 +94,123 @@ function drawLine(ctx, a, b, color, width = 4) {
   ctx.restore();
 }
 
-function drawPoint(ctx, p, color, radius = 5) {
+function drawPoint(ctx, p, color, scale) {
   if (!p) return;
   ctx.save();
   ctx.fillStyle = (p.visibility ?? 1) < 0.45 ? COLORS.weak : color;
   ctx.beginPath();
-  ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+  ctx.arc(p.x, p.y, Math.max(4, 6 * scale), 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 }
 
-function drawLabel(ctx, p, label) {
-  if (!p) return;
-  ctx.save();
-  ctx.font = "12px system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
-  ctx.fillStyle = COLORS.text;
-  ctx.fillText(label, p.x + 7, p.y - 7);
-  ctx.restore();
-}
-
-function vectorAngleDeg(a, b) {
-  if (!a || !b) return null;
-  const radians = Math.atan2(b.y - a.y, b.x - a.x);
-  return (radians * 180) / Math.PI;
-}
-
-function jointAngleDeg(a, b, c) {
+function angleAt(a, b, c) {
   if (!a || !b || !c) return null;
-
-  const ab = { x: a.x - b.x, y: a.y - b.y };
-  const cb = { x: c.x - b.x, y: c.y - b.y };
-
-  const dot = ab.x * cb.x + ab.y * cb.y;
-  const abLen = Math.hypot(ab.x, ab.y);
-  const cbLen = Math.hypot(cb.x, cb.y);
-  if (!abLen || !cbLen) return null;
-
-  const cosine = Math.max(-1, Math.min(1, dot / (abLen * cbLen)));
-  return Math.round((Math.acos(cosine) * 180) / Math.PI);
+  const v1 = { x: a.x - b.x, y: a.y - b.y };
+  const v2 = { x: c.x - b.x, y: c.y - b.y };
+  const dot = v1.x * v2.x + v1.y * v2.y;
+  const l1 = Math.hypot(v1.x, v1.y);
+  const l2 = Math.hypot(v2.x, v2.y);
+  if (!l1 || !l2) return null;
+  const cos = Math.max(-1, Math.min(1, dot / (l1 * l2)));
+  return Math.round((Math.acos(cos) * 180) / Math.PI);
 }
 
-function formatAngle(value) {
-  if (value === null || Number.isNaN(value)) return "—";
-  return `${Math.round(value)}°`;
+function buildPoints(landmarks, width, height) {
+  const points = {};
+  Object.entries(LANDMARKS).forEach(([name, index]) => {
+    const lm = landmarks[index];
+    if (!lm) return;
+    points[name] = {
+      x: lm.x * width,
+      y: lm.y * height,
+      visibility: lm.visibility ?? 1,
+      name,
+    };
+  });
+
+  points.midShoulder = midpoint(points.leftShoulder, points.rightShoulder, "midShoulder");
+  points.midHip = midpoint(points.leftHip, points.rightHip, "midHip");
+  return points;
 }
 
-function getSkeletonColor(a, b) {
-  if (a.startsWith("left") || b.startsWith("left")) return COLORS.left;
-  if (a.startsWith("right") || b.startsWith("right")) return COLORS.right;
-  if (["leftShoulder", "rightShoulder", "leftHip", "rightHip"].includes(a) || ["leftShoulder", "rightShoulder", "leftHip", "rightHip"].includes(b)) {
-    return COLORS.trunk;
-  }
-  return COLORS.head;
+function drawSkeletonOnCanvas(canvas, image, landmarks) {
+  const ctx = canvas.getContext("2d");
+  const width = image.naturalWidth || image.videoWidth || image.width;
+  const height = image.naturalHeight || image.videoHeight || image.height;
+
+  canvas.width = width;
+  canvas.height = height;
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(image, 0, 0, width, height);
+
+  if (!landmarks?.length) return null;
+
+  const points = buildPoints(landmarks, width, height);
+  const scale = Math.max(0.7, width / 900);
+
+  SKELETON_CONNECTIONS.forEach(([a, b]) => {
+    drawLine(ctx, points[a], points[b], getColorForConnection(a, b), scale);
+  });
+
+  Object.keys(LANDMARKS).forEach((name) => {
+    const color = name === "nose"
+      ? COLORS.head
+      : name.includes("Shoulder") || name.includes("Hip")
+        ? COLORS.trunk
+        : name.startsWith("left") && (name.includes("Elbow") || name.includes("Wrist"))
+          ? COLORS.leftArm
+          : name.startsWith("right") && (name.includes("Elbow") || name.includes("Wrist"))
+            ? COLORS.rightArm
+            : name.startsWith("left")
+              ? COLORS.leftLeg
+              : COLORS.rightLeg;
+    drawPoint(ctx, points[name], color, scale);
+  });
+
+  drawPoint(ctx, points.midShoulder, COLORS.center, scale);
+  drawPoint(ctx, points.midHip, COLORS.center, scale);
+
+  return {
+    leftKnee: angleAt(points.leftHip, points.leftKnee, points.leftAnkle),
+    rightKnee: angleAt(points.rightHip, points.rightKnee, points.rightAnkle),
+    leftAnkle: angleAt(points.leftKnee, points.leftAnkle, points.leftFootIndex),
+    rightAnkle: angleAt(points.rightKnee, points.rightAnkle, points.rightFootIndex),
+    leftElbow: angleAt(points.leftShoulder, points.leftElbow, points.leftWrist),
+    rightElbow: angleAt(points.rightShoulder, points.rightElbow, points.rightWrist),
+    confidence: Math.round(
+      (Object.keys(LANDMARKS).reduce((sum, key) => sum + (points[key]?.visibility ?? 0), 0) /
+        Object.keys(LANDMARKS).length) *
+        100
+    ),
+  };
+}
+
+function Metric({ label, value }) {
+  return (
+    <div className="rounded-xl bg-slate-950 p-3">
+      <div className="text-xs text-slate-400">{label}</div>
+      <div className="text-base font-semibold">{value ?? "—"}</div>
+    </div>
+  );
 }
 
 export default function FullSkeletonGaitAnalyzer() {
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
+  const hiddenVideoRef = useRef(null);
+  const mainCanvasRef = useRef(null);
   const landmarkerRef = useRef(null);
-  const rafRef = useRef(null);
 
-  const [status, setStatus] = useState("Загружаю модель скелета…");
+  const [status, setStatus] = useState("Загружаю модель…");
   const [videoUrl, setVideoUrl] = useState(null);
+  const [frames, setFrames] = useState([]);
+  const [selectedFrameId, setSelectedFrameId] = useState(null);
   const [metrics, setMetrics] = useState(null);
-  const [showLabels, setShowLabels] = useState(true);
-  const [showAngles, setShowAngles] = useState(true);
+  const [isExtracting, setIsExtracting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
 
-    async function initPoseLandmarker() {
+    async function init() {
       try {
         const vision = await FilesetResolver.forVisionTasks(
           "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
@@ -199,7 +221,7 @@ export default function FullSkeletonGaitAnalyzer() {
             modelAssetPath: MODEL_URL,
             delegate: "GPU",
           },
-          runningMode: "VIDEO",
+          runningMode: "IMAGE",
           numPoses: 1,
           minPoseDetectionConfidence: 0.45,
           minPosePresenceConfidence: 0.45,
@@ -208,328 +230,250 @@ export default function FullSkeletonGaitAnalyzer() {
 
         if (!cancelled) {
           landmarkerRef.current = landmarker;
-          setStatus("Модель готова. Загрузи видео.");
+          setStatus("Модель готова. Загрузи видео, потом нарежь кадры.");
         }
-      } catch (error) {
-        console.error(error);
-        setStatus("Ошибка загрузки MediaPipe Pose. Проверь установку @mediapipe/tasks-vision.");
+      } catch (err) {
+        console.error(err);
+        setStatus("Ошибка загрузки MediaPipe. Проверь @mediapipe/tasks-vision.");
       }
     }
 
-    initPoseLandmarker();
-
+    init();
     return () => {
       cancelled = true;
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      if (landmarkerRef.current) landmarkerRef.current.close();
+      landmarkerRef.current?.close();
     };
   }, []);
 
-  function handleVideoUpload(event) {
-    const file = event.target.files?.[0];
+  function handleUpload(e) {
+    const file = e.target.files?.[0];
     if (!file) return;
-
-    if (videoUrl) URL.revokeObjectURL(videoUrl);
     const url = URL.createObjectURL(file);
     setVideoUrl(url);
+    setFrames([]);
+    setSelectedFrameId(null);
     setMetrics(null);
-    setStatus("Видео загружено. Нажми Play.");
+    setStatus("Видео загружено. Теперь нажми “Нарезать кадры”.");
   }
 
-  function buildPoints(landmarks, width, height) {
-    const points = {};
-    Object.keys(LANDMARKS).forEach((name) => {
-      points[name] = getPoint(landmarks, name, width, height);
+  async function extractFrames() {
+    const video = hiddenVideoRef.current;
+    if (!video || !videoUrl) return;
+
+    setIsExtracting(true);
+    setStatus("Нарезаю видео на кадры…");
+
+    await new Promise((resolve) => {
+      if (video.readyState >= 2) resolve();
+      else video.onloadedmetadata = resolve;
     });
 
-    points.midShoulder = midpoint(points.leftShoulder, points.rightShoulder, "midShoulder");
-    points.midHip = midpoint(points.leftHip, points.rightHip, "midHip");
-    points.neck = midpoint(points.leftShoulder, points.rightShoulder, "neck");
+    const duration = video.duration;
+    const count = Math.min(36, Math.max(12, Math.floor(duration * 8))); // примерно 8 кадров/сек, но без безумия
+    const step = duration / count;
+    const tempCanvas = document.createElement("canvas");
+    const ctx = tempCanvas.getContext("2d");
+    tempCanvas.width = video.videoWidth;
+    tempCanvas.height = video.videoHeight;
 
-    return points;
-  }
+    const nextFrames = [];
 
-  function computeMetrics(points) {
-    const pelvisTilt = vectorAngleDeg(points.leftHip, points.rightHip);
-    const shoulderTilt = vectorAngleDeg(points.leftShoulder, points.rightShoulder);
-    const torsoTilt = vectorAngleDeg(points.midHip, points.midShoulder);
+    for (let i = 0; i < count; i += 1) {
+      const time = Math.min(duration - 0.05, i * step);
+      video.currentTime = time;
+      await new Promise((resolve) => {
+        video.onseeked = resolve;
+      });
 
-    const leftKnee = jointAngleDeg(points.leftHip, points.leftKnee, points.leftAnkle);
-    const rightKnee = jointAngleDeg(points.rightHip, points.rightKnee, points.rightAnkle);
-
-    const leftElbow = jointAngleDeg(points.leftShoulder, points.leftElbow, points.leftWrist);
-    const rightElbow = jointAngleDeg(points.rightShoulder, points.rightElbow, points.rightWrist);
-
-    const leftHip = jointAngleDeg(points.leftShoulder, points.leftHip, points.leftKnee);
-    const rightHip = jointAngleDeg(points.rightShoulder, points.rightHip, points.rightKnee);
-
-    const leftAnkle = jointAngleDeg(points.leftKnee, points.leftAnkle, points.leftFootIndex);
-    const rightAnkle = jointAngleDeg(points.rightKnee, points.rightAnkle, points.rightFootIndex);
-
-    const leftFootAngle = vectorAngleDeg(points.leftHeel, points.leftFootIndex);
-    const rightFootAngle = vectorAngleDeg(points.rightHeel, points.rightFootIndex);
-
-    return {
-      pelvisTilt,
-      shoulderTilt,
-      torsoTilt,
-      leftHip,
-      rightHip,
-      leftKnee,
-      rightKnee,
-      leftAnkle,
-      rightAnkle,
-      leftElbow,
-      rightElbow,
-      leftFootAngle,
-      rightFootAngle,
-    };
-  }
-
-  function drawSkeleton(ctx, points) {
-    SKELETON_CONNECTIONS.forEach(([aName, bName]) => {
-      drawLine(ctx, points[aName], points[bName], getSkeletonColor(aName, bName));
-    });
-
-    // central biomechanical axes
-    drawLine(ctx, points.midHip, points.midShoulder, COLORS.center, 5);
-    drawLine(ctx, points.nose, points.midShoulder, COLORS.center, 3);
-
-    const visibleBodyPoints = [
-      "nose",
-      "leftShoulder",
-      "rightShoulder",
-      "leftElbow",
-      "rightElbow",
-      "leftWrist",
-      "rightWrist",
-      "leftHip",
-      "rightHip",
-      "leftKnee",
-      "rightKnee",
-      "leftAnkle",
-      "rightAnkle",
-      "leftHeel",
-      "rightHeel",
-      "leftFootIndex",
-      "rightFootIndex",
-    ];
-
-    visibleBodyPoints.forEach((name) => {
-      const color = name.startsWith("left")
-        ? COLORS.left
-        : name.startsWith("right")
-          ? COLORS.right
-          : COLORS.head;
-      drawPoint(ctx, points[name], color, 5);
-    });
-
-    drawPoint(ctx, points.midHip, COLORS.center, 7);
-    drawPoint(ctx, points.midShoulder, COLORS.center, 7);
-    drawPoint(ctx, points.neck, COLORS.center, 6);
-
-    if (showLabels) {
-      const importantLabels = [
-        ["nose", "голова"],
-        ["leftShoulder", "L плечо"],
-        ["rightShoulder", "R плечо"],
-        ["leftElbow", "L локоть"],
-        ["rightElbow", "R локоть"],
-        ["leftWrist", "L кисть"],
-        ["rightWrist", "R кисть"],
-        ["leftHip", "L таз"],
-        ["rightHip", "R таз"],
-        ["leftKnee", "L колено"],
-        ["rightKnee", "R колено"],
-        ["leftAnkle", "L голеностоп"],
-        ["rightAnkle", "R голеностоп"],
-        ["leftHeel", "L пятка"],
-        ["rightHeel", "R пятка"],
-        ["leftFootIndex", "L носок"],
-        ["rightFootIndex", "R носок"],
-      ];
-
-      importantLabels.forEach(([name, label]) => drawLabel(ctx, points[name], label));
+      ctx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+      const dataUrl = tempCanvas.toDataURL("image/jpeg", 0.86);
+      nextFrames.push({ id: i, time, dataUrl, selected: false, analyzed: false, confidence: null });
     }
+
+    setFrames(nextFrames);
+    setSelectedFrameId(nextFrames[0]?.id ?? null);
+    setIsExtracting(false);
+    setStatus("Кадры готовы. Выбери кадры, где человек полностью виден сбоку.");
+
+    if (nextFrames[0]) analyzeFrame(nextFrames[0]);
   }
 
-  function drawAngleText(ctx, points, currentMetrics) {
-    if (!showAngles) return;
-
-    const angleLabels = [
-      [points.leftKnee, `L knee ${formatAngle(currentMetrics.leftKnee)}`],
-      [points.rightKnee, `R knee ${formatAngle(currentMetrics.rightKnee)}`],
-      [points.leftAnkle, `L ankle ${formatAngle(currentMetrics.leftAnkle)}`],
-      [points.rightAnkle, `R ankle ${formatAngle(currentMetrics.rightAnkle)}`],
-      [points.leftElbow, `L elbow ${formatAngle(currentMetrics.leftElbow)}`],
-      [points.rightElbow, `R elbow ${formatAngle(currentMetrics.rightElbow)}`],
-      [points.midHip, `pelvis ${formatAngle(currentMetrics.pelvisTilt)}`],
-      [points.midShoulder, `torso ${formatAngle(currentMetrics.torsoTilt)}`],
-    ];
-
-    ctx.save();
-    ctx.font = "13px system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
-    ctx.fillStyle = "white";
-    ctx.strokeStyle = "rgba(0,0,0,0.7)";
-    ctx.lineWidth = 3;
-
-    angleLabels.forEach(([p, text]) => {
-      if (!p) return;
-      ctx.strokeText(text, p.x + 10, p.y + 18);
-      ctx.fillText(text, p.x + 10, p.y + 18);
-    });
-
-    ctx.restore();
+  function toggleFrame(id) {
+    setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, selected: !f.selected } : f)));
   }
 
-  function analyzeFrame() {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
+  async function analyzeFrame(frame) {
     const landmarker = landmarkerRef.current;
+    const canvas = mainCanvasRef.current;
+    if (!landmarker || !canvas || !frame) return;
 
-    if (!video || !canvas || !landmarker || video.paused || video.ended) {
-      rafRef.current = requestAnimationFrame(analyzeFrame);
-      return;
-    }
+    setSelectedFrameId(frame.id);
+    setStatus(`Размечаю кадр ${frame.id + 1}…`);
 
-    const width = video.videoWidth;
-    const height = video.videoHeight;
-    if (!width || !height) {
-      rafRef.current = requestAnimationFrame(analyzeFrame);
-      return;
-    }
+    const img = new Image();
+    img.src = frame.dataUrl;
+    await img.decode();
 
-    canvas.width = width;
-    canvas.height = height;
-
-    const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, width, height);
-
-    const result = landmarker.detectForVideo(video, performance.now());
+    const result = landmarker.detect(img);
     const landmarks = result.landmarks?.[0];
+    const nextMetrics = drawSkeletonOnCanvas(canvas, img, landmarks);
 
-    if (!landmarks) {
-      setStatus("Скелет не найден: человек должен быть целиком в кадре, сбоку, с видимыми стопами.");
-      rafRef.current = requestAnimationFrame(analyzeFrame);
+    if (!landmarks || !nextMetrics) {
+      setMetrics(null);
+      setFrames((prev) => prev.map((f) => (f.id === frame.id ? { ...f, analyzed: true, confidence: 0 } : f)));
+      setStatus("На этом кадре тело не найдено. Не выбирай его для анализа.");
       return;
     }
 
-    const points = buildPoints(landmarks, width, height);
-    const currentMetrics = computeMetrics(points);
-
-    drawSkeleton(ctx, points);
-    drawAngleText(ctx, points, currentMetrics);
-    setMetrics(currentMetrics);
-    setStatus("Скелет читается: голова, корпус, обе руки, обе ноги, пятки и носки.");
-
-    rafRef.current = requestAnimationFrame(analyzeFrame);
+    setMetrics(nextMetrics);
+    setFrames((prev) =>
+      prev.map((f) =>
+        f.id === frame.id ? { ...f, analyzed: true, confidence: nextMetrics.confidence } : f
+      )
+    );
+    setStatus(`Кадр размечен. Confidence: ${nextMetrics.confidence}%.`);
   }
 
-  function handlePlay() {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    analyzeFrame();
+  function selectAllGoodFrames() {
+    setFrames((prev) =>
+      prev.map((f) => ({
+        ...f,
+        selected: (f.confidence ?? 0) >= 55,
+      }))
+    );
   }
+
+  const selectedFrame = frames.find((f) => f.id === selectedFrameId);
+  const selectedCount = frames.filter((f) => f.selected).length;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white p-4 md:p-8">
-      <div className="max-w-6xl mx-auto space-y-4">
-        <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
-          <div>
-            <h1 className="text-2xl md:text-3xl font-bold">Full Skeleton Gait Analyzer</h1>
-            <p className="text-slate-300 mt-1">
-              Разметка тела без лица: голова, корпус, обе руки, таз, обе ноги, пятки и носки.
-            </p>
-          </div>
+    <div className="min-h-screen bg-slate-950 p-4 md:p-8 text-white">
+      <div className="mx-auto max-w-7xl space-y-4">
+        <div>
+          <h1 className="text-2xl md:text-3xl font-bold">Анализ походки по выбранным кадрам</h1>
+          <p className="mt-1 text-slate-300">
+            Сначала режем видео на картинки, потом размечаем только хорошие кадры. Так скелет меньше “пролетает”.
+          </p>
+        </div>
 
-          <label className="inline-flex cursor-pointer items-center rounded-2xl bg-white text-slate-950 px-4 py-2 font-medium shadow">
+        <div className="flex flex-wrap gap-3">
+          <label className="cursor-pointer rounded-2xl bg-blue-600 px-4 py-2 font-semibold shadow hover:bg-blue-500">
             Загрузить видео
-            <input type="file" accept="video/*" onChange={handleVideoUpload} className="hidden" />
+            <input type="file" accept="video/*" className="hidden" onChange={handleUpload} />
           </label>
+
+          <button
+            type="button"
+            disabled={!videoUrl || isExtracting}
+            onClick={extractFrames}
+            className="rounded-2xl bg-emerald-600 px-4 py-2 font-semibold shadow hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isExtracting ? "Нарезаю…" : "Нарезать кадры"}
+          </button>
+
+          <button
+            type="button"
+            disabled={!frames.length}
+            onClick={selectAllGoodFrames}
+            className="rounded-2xl bg-slate-800 px-4 py-2 font-semibold shadow hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Выбрать хорошие автоматически
+          </button>
         </div>
 
         <div className="rounded-2xl border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">
           {status}
         </div>
 
-        <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            onClick={() => setShowLabels((v) => !v)}
-            className="rounded-xl bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
-          >
-            {showLabels ? "Скрыть подписи" : "Показать подписи"}
-          </button>
+        <video ref={hiddenVideoRef} src={videoUrl ?? undefined} className="hidden" muted playsInline />
 
-          <button
-            type="button"
-            onClick={() => setShowAngles((v) => !v)}
-            className="rounded-xl bg-slate-800 px-3 py-2 text-sm hover:bg-slate-700"
-          >
-            {showAngles ? "Скрыть углы" : "Показать углы"}
-          </button>
-        </div>
+        <div className="grid grid-cols-1 xl:grid-cols-[1fr_360px] gap-4">
+          <div className="space-y-4">
+            <div className="overflow-hidden rounded-2xl border border-slate-700 bg-black">
+              {frames.length ? (
+                <canvas ref={mainCanvasRef} className="block w-full h-auto" />
+              ) : (
+                <div className="flex aspect-video items-center justify-center text-slate-400">
+                  Здесь появится выбранный кадр с разметкой скелета
+                </div>
+              )}
+            </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
-          <div className="relative overflow-hidden rounded-2xl border border-slate-700 bg-black shadow-xl">
-            {videoUrl ? (
-              <>
-                <video
-                  ref={videoRef}
-                  src={videoUrl}
-                  controls
-                  playsInline
-                  onPlay={handlePlay}
-                  className="block w-full h-auto"
-                />
-                <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none" />
-              </>
-            ) : (
-              <div className="aspect-video flex items-center justify-center text-slate-400">
-                Загрузи видео с человеком целиком в кадре
+            <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h2 className="font-semibold">Раскадровка</h2>
+                <div className="text-sm text-slate-300">Выбрано: {selectedCount} / {frames.length}</div>
               </div>
-            )}
+
+              {frames.length ? (
+                <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-7 lg:grid-cols-9 gap-3">
+                  {frames.map((frame) => (
+                    <button
+                      key={frame.id}
+                      type="button"
+                      onClick={() => analyzeFrame(frame)}
+                      className={`relative overflow-hidden rounded-xl border-2 bg-slate-950 text-left ${
+                        frame.id === selectedFrameId ? "border-blue-500" : frame.selected ? "border-emerald-500" : "border-slate-700"
+                      }`}
+                    >
+                      <img src={frame.dataUrl} alt={`Кадр ${frame.id + 1}`} className="aspect-video w-full object-cover" />
+                      <div className="absolute left-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px]">
+                        {frame.id + 1}
+                      </div>
+                      <div className="absolute right-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px]">
+                        {frame.confidence === null ? "—" : `${frame.confidence}%`}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleFrame(frame.id);
+                        }}
+                        className={`absolute bottom-1 right-1 rounded-full px-2 py-0.5 text-xs font-bold ${
+                          frame.selected ? "bg-emerald-500 text-white" : "bg-black/70 text-slate-200"
+                        }`}
+                      >
+                        {frame.selected ? "✓" : "+"}
+                      </button>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-sm text-slate-400">
+                  Загрузи видео и нажми “Нарезать кадры”.
+                </div>
+              )}
+            </div>
           </div>
 
-          <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4 space-y-3">
-            <h2 className="text-lg font-semibold">Текущие метрики кадра</h2>
-
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              <Metric label="Таз" value={formatAngle(metrics?.pelvisTilt ?? null)} />
-              <Metric label="Плечи" value={formatAngle(metrics?.shoulderTilt ?? null)} />
-              <Metric label="Корпус" value={formatAngle(metrics?.torsoTilt ?? null)} />
-              <Metric label="" value="" muted />
-
-              <Metric label="L бедро" value={formatAngle(metrics?.leftHip ?? null)} />
-              <Metric label="R бедро" value={formatAngle(metrics?.rightHip ?? null)} />
-              <Metric label="L колено" value={formatAngle(metrics?.leftKnee ?? null)} />
-              <Metric label="R колено" value={formatAngle(metrics?.rightKnee ?? null)} />
-              <Metric label="L голеностоп" value={formatAngle(metrics?.leftAnkle ?? null)} />
-              <Metric label="R голеностоп" value={formatAngle(metrics?.rightAnkle ?? null)} />
-              <Metric label="L стопа" value={formatAngle(metrics?.leftFootAngle ?? null)} />
-              <Metric label="R стопа" value={formatAngle(metrics?.rightFootAngle ?? null)} />
-
-              <Metric label="L локоть" value={formatAngle(metrics?.leftElbow ?? null)} />
-              <Metric label="R локоть" value={formatAngle(metrics?.rightElbow ?? null)} />
+          <aside className="space-y-4">
+            <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4">
+              <h2 className="mb-3 text-lg font-semibold">Кадр</h2>
+              <div className="text-sm text-slate-300">
+                {selectedFrame ? `Кадр ${selectedFrame.id + 1}, ${selectedFrame.time.toFixed(2)} сек` : "Кадр не выбран"}
+              </div>
             </div>
 
-            <div className="rounded-xl bg-slate-950 p-3 text-xs text-slate-300 leading-relaxed">
-              Сейчас это слой чтения скелета. Диагностику и патологические флаги лучше навешивать сверху:
-              асимметрия, toe drag, перекос таза, завал корпуса, плохая работа рук.
+            <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4">
+              <h2 className="mb-3 text-lg font-semibold">Метрики скелета</h2>
+              <div className="grid grid-cols-2 gap-2">
+                <Metric label="Confidence" value={metrics ? `${metrics.confidence}%` : null} />
+                <Metric label="L колено" value={metrics?.leftKnee ? `${metrics.leftKnee}°` : null} />
+                <Metric label="R колено" value={metrics?.rightKnee ? `${metrics.rightKnee}°` : null} />
+                <Metric label="L голеностоп" value={metrics?.leftAnkle ? `${metrics.leftAnkle}°` : null} />
+                <Metric label="R голеностоп" value={metrics?.rightAnkle ? `${metrics.rightAnkle}°` : null} />
+                <Metric label="L локоть" value={metrics?.leftElbow ? `${metrics.leftElbow}°` : null} />
+                <Metric label="R локоть" value={metrics?.rightElbow ? `${metrics.rightElbow}°` : null} />
+              </div>
             </div>
-          </div>
+
+            <div className="rounded-2xl border border-blue-700/60 bg-blue-950/40 p-4 text-sm text-blue-100">
+              <h2 className="mb-2 font-semibold">Как выбирать кадры</h2>
+              <p>Оставляй кадры, где человек целиком в кадре, видны стопы, нет сильного смаза и тело стоит боком к камере.</p>
+            </div>
+          </aside>
         </div>
       </div>
-    </div>
-  );
-}
-
-function Metric({ label, value, muted = false }) {
-  if (muted) return <div />;
-
-  return (
-    <div className="rounded-xl bg-slate-950 p-3">
-      <div className="text-slate-400 text-xs">{label}</div>
-      <div className="font-semibold text-base">{value}</div>
     </div>
   );
 }
