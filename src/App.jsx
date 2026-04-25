@@ -467,7 +467,7 @@ function UploadScreen({ status, videoUrl, staticImages, onUploadVideo, onUploadI
           <p className="text-sm text-slate-400">MVP gait analytics</p>
           <h1 className="text-3xl font-bold mt-2">Анализ походки: фото + видео</h1>
           <p className="text-slate-300 mt-3 max-w-3xl">
-            Загрузи видео походки и/или статические фото спереди, сбоку и сзади. Система не ставит диагноз, а ищет зоны внимания и даёт подсказки для проверки ортеза, стопы, колена, таза и компенсаций.
+            Здесь есть три обязательных блока: 1) загрузка видео, 2) загрузка фото спереди/сбоку/сзади, 3) общий движок подсказок по всем найденным зонам внимания.
           </p>
           <div className="mt-4 text-sm text-slate-400">Статус: {status}</div>
         </div>
@@ -484,8 +484,8 @@ function UploadScreen({ status, videoUrl, staticImages, onUploadVideo, onUploadI
           </div>
 
           <div className="rounded-3xl bg-slate-900 border border-slate-800 p-5">
-            <h2 className="text-xl font-semibold">2. Фото стойки</h2>
-            <p className="text-sm text-slate-400 mt-2">Можно загрузить одно фото или все три: спереди, сбоку, сзади.</p>
+            <h2 className="text-xl font-semibold">2. Статичные фото: перед / бок / зад</h2>
+            <p className="text-sm text-slate-400 mt-2">Эти фото анализируются отдельно от видео, а потом объединяются в общий вывод.</p>
             <div className="mt-4 grid gap-3">
               {PHOTO_VIEWS.map((view) => (
                 <label key={view.id} className="rounded-2xl border border-dashed border-slate-600 p-4 cursor-pointer hover:bg-slate-800/60 transition">
@@ -567,8 +567,8 @@ function ResultCard({ title, result }) {
 function HintPanel({ hints }) {
   return (
     <div className="rounded-3xl bg-slate-900 border border-slate-800 p-5">
-      <h2 className="text-2xl font-bold">Движок подсказок</h2>
-      <p className="text-sm text-slate-400 mt-2">Это не диагноз. Это список вещей, которые стоит проверить глазами и руками.</p>
+      <h2 className="text-2xl font-bold">Общий движок подсказок: фото + видео</h2>
+      <p className="text-sm text-slate-400 mt-2">Он собирает флаги из видео и всех статичных фото, группирует их по зонам: таз, колено, стопа, корпус, качество данных.</p>
       <div className="mt-4 grid md:grid-cols-2 gap-3">
         {hints.map((hint, index) => (
           <div key={`${hint.area}-${index}`} className="rounded-2xl bg-slate-800/70 border border-slate-700 p-4">
