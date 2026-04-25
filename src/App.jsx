@@ -300,6 +300,26 @@ export default function FullSkeletonGaitAnalyzer() {
 
   function toggleFrame(id) {
     setFrames((prev) => prev.map((f) => (f.id === id ? { ...f, selected: !f.selected } : f)));
+
+    const frame = frames.find((f) => f.id === id);
+    if (frame) analyzeFrame(frame);
+  }
+
+  async function analyzeSelectedFrames() {
+    const selected = frames.filter((f) => f.selected);
+    if (!selected.length) {
+      setStatus("Сначала выбери кадры кликом по миниатюрам.");
+      return;
+    }
+
+    setStatus(`Анализирую выбранные кадры: ${selected.length} шт.`);
+
+    for (const frame of selected) {
+      await analyzeFrame(frame);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+
+    setStatus(`Готово: проанализировано выбранных кадров — ${selected.length}.`);
   }
 
   async function analyzeFrame(frame) {
@@ -379,6 +399,15 @@ export default function FullSkeletonGaitAnalyzer() {
           >
             Выбрать хорошие автоматически
           </button>
+
+          <button
+            type="button"
+            disabled={!selectedCount}
+            onClick={analyzeSelectedFrames}
+            className="rounded-2xl bg-fuchsia-600 px-4 py-2 font-semibold shadow hover:bg-fuchsia-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Анализировать выбранные
+          </button>
         </div>
 
         <div className="rounded-2xl border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">
@@ -411,7 +440,7 @@ export default function FullSkeletonGaitAnalyzer() {
                     <button
                       key={frame.id}
                       type="button"
-                      onClick={() => analyzeFrame(frame)}
+                      onClick={() => toggleFrame(frame.id)}
                       className={`relative overflow-hidden rounded-xl border-2 bg-slate-950 text-left ${
                         frame.id === selectedFrameId ? "border-blue-500" : frame.selected ? "border-emerald-500" : "border-slate-700"
                       }`}
@@ -423,24 +452,19 @@ export default function FullSkeletonGaitAnalyzer() {
                       <div className="absolute right-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px]">
                         {frame.confidence === null ? "—" : `${frame.confidence}%`}
                       </div>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleFrame(frame.id);
-                        }}
-                        className={`absolute bottom-1 right-1 rounded-full px-2 py-0.5 text-xs font-bold ${
+                      <div
+                        className={`absolute inset-x-0 bottom-0 px-2 py-1 text-center text-xs font-bold ${
                           frame.selected ? "bg-emerald-500 text-white" : "bg-black/70 text-slate-200"
                         }`}
                       >
-                        {frame.selected ? "✓" : "+"}
-                      </button>
+                        {frame.selected ? "✓ выбрано" : "клик = выбрать"}
+                      </div>
                     </button>
                   ))}
                 </div>
               ) : (
                 <div className="text-sm text-slate-400">
-                  Загрузи видео и нажми “Нарезать кадры”.
+                  Загрузи видео и нажми “Нарезать кадры”. Потом выбирай кадры кликом по самой картинке.
                 </div>
               )}
             </div>
@@ -469,7 +493,7 @@ export default function FullSkeletonGaitAnalyzer() {
 
             <div className="rounded-2xl border border-blue-700/60 bg-blue-950/40 p-4 text-sm text-blue-100">
               <h2 className="mb-2 font-semibold">Как выбирать кадры</h2>
-              <p>Оставляй кадры, где человек целиком в кадре, видны стопы, нет сильного смаза и тело стоит боком к камере.</p>
+              <p>Клик по миниатюре выбирает или снимает кадр. После выбора нажми “Анализировать выбранные”. Оставляй кадры, где человек целиком в кадре, видны стопы, нет сильного смаза и тело стоит боком к камере.</p>
             </div>
           </aside>
         </div>
