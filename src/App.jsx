@@ -58,76 +58,17 @@ const COLORS = {
 };
 
 const GAIT_PHASES = [
-  {
-    id: "loading_response",
-    label: "Loading response",
-    focus: "контакт, амортизация, стабильность колена",
-    norms: {
-      knee: { min: 5, max: 25, label: "колено слегка сгибается" },
-      ankle: { min: 80, max: 120, label: "стопа принимает опору" },
-    },
-  },
-  {
-    id: "mid_stance",
-    label: "Mid stance",
-    focus: "опора, перенос тела над стопой",
-    norms: {
-      knee: { min: 0, max: 15, label: "колено близко к разгибанию" },
-      ankle: { min: 85, max: 120, label: "контроль голеностопа" },
-    },
-  },
-  {
-    id: "terminal_stance",
-    label: "Terminal stance",
-    focus: "перекат через стопу, пятка поднимается",
-    norms: {
-      knee: { min: 0, max: 20, label: "колено почти разогнуто" },
-      ankle: { min: 80, max: 125, label: "стопа уходит в перекат" },
-    },
-  },
-  {
-    id: "pre_swing",
-    label: "Pre-swing",
-    focus: "отрыв, подготовка к переносу",
-    norms: {
-      knee: { min: 20, max: 50, label: "начинается сгибание колена" },
-      ankle: { min: 70, max: 120, label: "отталкивание/отрыв" },
-    },
-  },
-  {
-    id: "initial_swing",
-    label: "Initial swing",
-    focus: "перенос, clearance стопы",
-    norms: {
-      knee: { min: 40, max: 75, label: "колено сгибается для clearance" },
-      ankle: { min: 75, max: 125, label: "стопа не должна цеплять пол" },
-    },
-  },
-  {
-    id: "mid_swing",
-    label: "Mid swing",
-    focus: "перенос ноги вперёд",
-    norms: {
-      knee: { min: 25, max: 65, label: "колено начинает разгибаться" },
-      ankle: { min: 80, max: 125, label: "стопа удерживается от провиса" },
-    },
-  },
-  {
-    id: "terminal_swing",
-    label: "Terminal swing",
-    focus: "подготовка к контакту пяткой",
-    norms: {
-      knee: { min: 0, max: 25, label: "колено разгибается" },
-      ankle: { min: 80, max: 125, label: "стопа готовится к контакту" },
-    },
-  },
+  { id: "loading_response", label: "Loading response", focus: "контакт, амортизация, стабильность колена", norms: { knee: { min: 5, max: 25 }, ankle: { min: 80, max: 120 } } },
+  { id: "mid_stance", label: "Mid stance", focus: "опора, перенос тела над стопой", norms: { knee: { min: 0, max: 15 }, ankle: { min: 85, max: 120 } } },
+  { id: "terminal_stance", label: "Terminal stance", focus: "перекат через стопу, пятка поднимается", norms: { knee: { min: 0, max: 20 }, ankle: { min: 80, max: 125 } } },
+  { id: "pre_swing", label: "Pre-swing", focus: "отрыв, подготовка к переносу", norms: { knee: { min: 20, max: 50 }, ankle: { min: 70, max: 120 } } },
+  { id: "initial_swing", label: "Initial swing", focus: "перенос, clearance стопы", norms: { knee: { min: 40, max: 75 }, ankle: { min: 75, max: 125 } } },
+  { id: "mid_swing", label: "Mid swing", focus: "перенос ноги вперёд", norms: { knee: { min: 25, max: 65 }, ankle: { min: 80, max: 125 } } },
+  { id: "terminal_swing", label: "Terminal swing", focus: "подготовка к контакту пяткой", norms: { knee: { min: 0, max: 25 }, ankle: { min: 80, max: 125 } } },
 ];
 
 const DEFAULT_PHASE = "mid_swing";
-
-const NORMS = {
-  confidence: { min: 55, max: 100, label: "качество распознавания" },
-};
+const MIN_CONFIDENCE = 55;
 
 function getPhaseById(id) {
   return GAIT_PHASES.find((phase) => phase.id === id) ?? GAIT_PHASES.find((phase) => phase.id === DEFAULT_PHASE);
@@ -151,7 +92,8 @@ function angleAt(a, b, c) {
   const l1 = Math.hypot(v1.x, v1.y);
   const l2 = Math.hypot(v2.x, v2.y);
   if (!l1 || !l2) return null;
-  return Math.round((Math.acos(Math.max(-1, Math.min(1, dot / (l1 * l2)))) * 180) / Math.PI);
+  const cos = Math.max(-1, Math.min(1, dot / (l1 * l2)));
+  return Math.round((Math.acos(cos) * 180) / Math.PI);
 }
 
 function segmentAngle(a, b) {
@@ -164,7 +106,12 @@ function buildPoints(landmarks, width, height) {
   Object.entries(LANDMARKS).forEach(([name, index]) => {
     const lm = landmarks[index];
     if (!lm) return;
-    points[name] = { x: lm.x * width, y: lm.y * height, visibility: lm.visibility ?? 1, name };
+    points[name] = {
+      x: lm.x * width,
+      y: lm.y * height,
+      visibility: lm.visibility ?? 1,
+      name,
+    };
   });
   points.midShoulder = midpoint(points.leftShoulder, points.rightShoulder, "midShoulder");
   points.midHip = midpoint(points.leftHip, points.rightHip, "midHip");
@@ -193,6 +140,7 @@ function drawSkeleton(canvas, img, landmarks) {
   const ctx = canvas.getContext("2d");
   const width = img.naturalWidth || img.width;
   const height = img.naturalHeight || img.height;
+
   canvas.width = width;
   canvas.height = height;
   ctx.clearRect(0, 0, width, height);
@@ -228,7 +176,8 @@ function drawSkeleton(canvas, img, landmarks) {
 
   const confidence = Math.round(
     (Object.keys(LANDMARKS).reduce((sum, key) => sum + (points[key]?.visibility ?? 0), 0) /
-      Object.keys(LANDMARKS).length) * 100
+      Object.keys(LANDMARKS).length) *
+      100
   );
 
   return {
@@ -260,57 +209,34 @@ function describeNorm(value, range) {
 function classifyFrame(metrics, phaseId = DEFAULT_PHASE) {
   const phase = getPhaseById(phaseId);
   if (!metrics) {
-    return {
-      verdict: "нет данных",
-      score: 0,
-      flags: ["тело не найдено"],
-      phase,
-      deviations: [],
-    };
+    return { verdict: "нет данных", score: 0, flags: ["тело не найдено"], phase, deviations: [] };
   }
 
   const flags = [];
   const deviations = [];
   let score = 0;
 
-  const leftKneeBad = isOutsideNorm(metrics.leftKnee, phase.norms.knee);
-  const rightKneeBad = isOutsideNorm(metrics.rightKnee, phase.norms.knee);
-  const leftAnkleBad = isOutsideNorm(metrics.leftAnkle, phase.norms.ankle);
-  const rightAnkleBad = isOutsideNorm(metrics.rightAnkle, phase.norms.ankle);
-
-  if (metrics.confidence < NORMS.confidence.min) {
+  if (metrics.confidence < MIN_CONFIDENCE) {
     flags.push("низкое качество распознавания: кадр лучше не использовать для вывода");
-    deviations.push({ label: "Confidence", value: `${metrics.confidence}%`, norm: `≥${NORMS.confidence.min}%`, comment: "низкая уверенность модели" });
+    deviations.push({ label: "Confidence", value: `${metrics.confidence}%`, norm: `≥${MIN_CONFIDENCE}%`, comment: "низкая уверенность модели" });
     score += 2;
   }
 
-  if (leftKneeBad) {
-    const comment = describeNorm(metrics.leftKnee, phase.norms.knee);
-    flags.push(`левое колено: ${comment} для фазы ${phase.label}`);
-    deviations.push({ label: "L колено", value: `${metrics.leftKnee}°`, norm: `${phase.norms.knee.min}–${phase.norms.knee.max}°`, comment });
-    score += 1;
-  }
+  const checks = [
+    ["L колено", metrics.leftKnee, phase.norms.knee],
+    ["R колено", metrics.rightKnee, phase.norms.knee],
+    ["L голеностоп", metrics.leftAnkle, phase.norms.ankle],
+    ["R голеностоп", metrics.rightAnkle, phase.norms.ankle],
+  ];
 
-  if (rightKneeBad) {
-    const comment = describeNorm(metrics.rightKnee, phase.norms.knee);
-    flags.push(`правое колено: ${comment} для фазы ${phase.label}`);
-    deviations.push({ label: "R колено", value: `${metrics.rightKnee}°`, norm: `${phase.norms.knee.min}–${phase.norms.knee.max}°`, comment });
-    score += 1;
-  }
-
-  if (leftAnkleBad) {
-    const comment = describeNorm(metrics.leftAnkle, phase.norms.ankle);
-    flags.push(`левый голеностоп/стопа: ${comment} для фазы ${phase.label}`);
-    deviations.push({ label: "L голеностоп", value: `${metrics.leftAnkle}°`, norm: `${phase.norms.ankle.min}–${phase.norms.ankle.max}°`, comment });
-    score += 1;
-  }
-
-  if (rightAnkleBad) {
-    const comment = describeNorm(metrics.rightAnkle, phase.norms.ankle);
-    flags.push(`правый голеностоп/стопа: ${comment} для фазы ${phase.label}`);
-    deviations.push({ label: "R голеностоп", value: `${metrics.rightAnkle}°`, norm: `${phase.norms.ankle.min}–${phase.norms.ankle.max}°`, comment });
-    score += 1;
-  }
+  checks.forEach(([label, value, norm]) => {
+    if (isOutsideNorm(value, norm)) {
+      const comment = describeNorm(value, norm);
+      flags.push(`${label}: ${comment} для фазы ${phase.label}`);
+      deviations.push({ label, value: `${value}°`, norm: `${norm.min}–${norm.max}°`, comment });
+      score += 1;
+    }
+  });
 
   if (Math.abs(metrics.pelvisTilt ?? 0) > 12) {
     flags.push("таз заметно наклонён относительно кадра: проверь, это реальный перекос или наклон камеры");
@@ -322,7 +248,7 @@ function classifyFrame(metrics, phaseId = DEFAULT_PHASE) {
 
   return {
     score,
-    verdict: score >= 4 ? "патологичность/плохой кадр" : score >= 1 ? "есть отклонения" : "ближе к норме",
+    verdict: score >= 4 ? "патологичность / плохой кадр" : score >= 1 ? "есть отклонения" : "ближе к норме",
     flags,
     phase,
     deviations,
@@ -339,264 +265,164 @@ function Metric({ label, value, norm, bad }) {
   );
 }
 
-export default function FullSkeletonGaitAnalyzer() {
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null);
-  const landmarkerRef = useRef(null);
+function UploadScreen({ status, onUpload }) {
+  return (
+    <div className="min-h-screen bg-slate-950 p-6 text-white flex items-center justify-center">
+      <div className="w-full max-w-xl rounded-3xl border border-slate-700 bg-slate-900 p-8 text-center shadow-2xl">
+        <div className="mb-3 text-sm text-slate-400">1. Основной экран</div>
+        <h1 className="text-3xl md:text-4xl font-bold">Анализ походки</h1>
+        <p className="mt-3 text-slate-300">Загрузите видео. Дальше приложение нарежет его на кадры для выбора.</p>
 
-  const [step, setStep] = useState(1);
-  const [status, setStatus] = useState("Загружаю модель…");
-  const [videoUrl, setVideoUrl] = useState(null);
-  const [frames, setFrames] = useState([]);
-  const [selectedFrameId, setSelectedFrameId] = useState(null);
-  const [currentMetrics, setCurrentMetrics] = useState(null);
-  const [results, setResults] = useState([]);
-  const [isBusy, setIsBusy] = useState(false);
+        <label className="mt-8 inline-block cursor-pointer rounded-2xl bg-blue-600 px-6 py-3 font-semibold hover:bg-blue-500">
+          Загрузить видео
+          <input type="file" accept="video/*" className="hidden" onChange={onUpload} />
+        </label>
 
-  useEffect(() => {
-    let cancelled = false;
-    async function init() {
-      try {
-        const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
-        const landmarker = await PoseLandmarker.createFromOptions(vision, {
-          baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
-          runningMode: "IMAGE",
-          numPoses: 1,
-          minPoseDetectionConfidence: 0.45,
-          minPosePresenceConfidence: 0.45,
-          minTrackingConfidence: 0.45,
-        });
-        if (!cancelled) {
-          landmarkerRef.current = landmarker;
-          setStatus("Модель готова. Шаг 1: загрузи видео.");
-        }
-      } catch (e) {
-        console.error(e);
-        setStatus("Ошибка загрузки MediaPipe / @mediapipe/tasks-vision.");
-      }
-    }
-    init();
-    return () => {
-      cancelled = true;
-      landmarkerRef.current?.close();
-    };
-  }, []);
+        <div className="mt-6 rounded-2xl bg-slate-950 p-3 text-sm text-slate-300">{status}</div>
+      </div>
+    </div>
+  );
+}
 
-  function handleUpload(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const url = URL.createObjectURL(file);
-    setVideoUrl(url);
-    setFrames([]);
-    setResults([]);
-    setCurrentMetrics(null);
-    setSelectedFrameId(null);
-    setStep(2);
-    setStatus("Видео загружено. Шаг 2: нарежь кадры и выбери хорошие кликом по картинкам.");
-  }
+function FrameSelectionScreen({
+  status,
+  videoUrl,
+  videoRef,
+  frames,
+  selectedCount,
+  selectedFrameId,
+  isBusy,
+  onExtractFrames,
+  onToggleFrame,
+  onAnalyzeSelected,
+  onBack,
+}) {
+  return (
+    <div className="min-h-screen bg-slate-950 p-4 md:p-8 text-white">
+      <div className="mx-auto max-w-7xl space-y-5">
+        <header className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+          <div>
+            <div className="text-sm text-slate-400">2. Выбор кадров</div>
+            <h1 className="text-2xl md:text-3xl font-bold">Анализ походки</h1>
+            <p className="mt-1 text-slate-300">Выберите кадры, где человек полностью виден сбоку. Клик по картинке = выбрать/снять.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={onBack} className="rounded-xl bg-slate-800 px-4 py-2 font-semibold hover:bg-slate-700">Назад</button>
+            <button disabled={!videoUrl || isBusy} onClick={onExtractFrames} className="rounded-xl bg-emerald-600 px-4 py-2 font-semibold hover:bg-emerald-500 disabled:opacity-50">
+              {isBusy ? "Нарезаю…" : frames.length ? "Нарезать заново" : "Нарезать кадры"}
+            </button>
+            <button disabled={!selectedCount || isBusy} onClick={onAnalyzeSelected} className="rounded-xl bg-fuchsia-600 px-4 py-2 font-semibold hover:bg-fuchsia-500 disabled:opacity-50">
+              Анализировать выбранные кадры
+            </button>
+          </div>
+        </header>
 
-  async function extractFrames() {
-    const video = videoRef.current;
-    if (!video || !videoUrl) return;
-    setIsBusy(true);
-    setStatus("Нарезаю видео на кадры…");
+        <div className="rounded-2xl border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">{status}</div>
+        <video ref={videoRef} src={videoUrl ?? undefined} muted playsInline className="hidden" />
 
-    await new Promise((resolve) => {
-      if (video.readyState >= 2) resolve();
-      else video.onloadedmetadata = resolve;
-    });
+        <section className="rounded-2xl border border-slate-700 bg-slate-900 p-4">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-xl font-semibold">Выберите кадры</h2>
+            <div className="text-sm text-slate-300">Выбрано: {selectedCount} / {frames.length}</div>
+          </div>
 
-    const duration = video.duration || 1;
-    const count = Math.min(40, Math.max(12, Math.floor(duration * 8)));
-    const temp = document.createElement("canvas");
-    const ctx = temp.getContext("2d");
-    temp.width = video.videoWidth;
-    temp.height = video.videoHeight;
+          {frames.length ? (
+            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3">
+              {frames.map((frame) => (
+                <button
+                  key={frame.id}
+                  type="button"
+                  onClick={() => onToggleFrame(frame)}
+                  className={`relative overflow-hidden rounded-xl border-2 bg-slate-950 ${
+                    frame.selected ? "border-emerald-500" : selectedFrameId === frame.id ? "border-blue-500" : "border-slate-700"
+                  }`}
+                >
+                  <img src={frame.dataUrl} alt={`Кадр ${frame.id + 1}`} className="aspect-video w-full object-cover" />
+                  <div className="absolute left-1 top-1 rounded bg-black/75 px-1.5 py-0.5 text-[10px]">{frame.id + 1}</div>
+                  <div className="absolute right-1 top-1 rounded bg-black/75 px-1.5 py-0.5 text-[10px]">{frame.confidence === null ? "—" : `${frame.confidence}%`}</div>
+                  <div className="absolute left-1 bottom-6 rounded bg-black/75 px-1.5 py-0.5 text-[10px]">{getPhaseById(frame.phaseId)?.label}</div>
+                  <div className={`absolute inset-x-0 bottom-0 py-1 text-center text-xs font-bold ${frame.selected ? "bg-emerald-500" : "bg-black/70"}`}>
+                    {frame.selected ? "✓ выбрано" : "клик = выбрать"}
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-2xl bg-slate-950 p-10 text-center text-slate-400">Нажми “Нарезать кадры”.</div>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
 
-    const next = [];
-    for (let i = 0; i < count; i += 1) {
-      video.currentTime = Math.min(duration - 0.05, (duration / count) * i);
-      await new Promise((resolve) => (video.onseeked = resolve));
-      ctx.drawImage(video, 0, 0, temp.width, temp.height);
-      next.push({
-        id: i,
-        time: video.currentTime,
-        dataUrl: temp.toDataURL("image/jpeg", 0.88),
-        selected: false,
-        confidence: null,
-        phaseId: DEFAULT_PHASE,
-      });
-    }
-
-    setFrames(next);
-    setSelectedFrameId(next[0]?.id ?? null);
-    setIsBusy(false);
-    setStatus("Кадры готовы. Выбирай нужные кадры кликом по миниатюре, затем нажми “Анализировать выбранные”.");
-    if (next[0]) previewFrame(next[0]);
-  }
-
-  async function previewFrame(frame) {
-    const landmarker = landmarkerRef.current;
-    const canvas = canvasRef.current;
-    if (!landmarker || !canvas || !frame) return;
-
-    setSelectedFrameId(frame.id);
-    const img = new Image();
-    img.src = frame.dataUrl;
-    await img.decode();
-    const detected = landmarker.detect(img);
-    const metrics = drawSkeleton(canvas, img, detected.landmarks?.[0]);
-    setCurrentMetrics(metrics);
-
-    const confidence = metrics?.confidence ?? 0;
-    setFrames((prev) => prev.map((f) => (f.id === frame.id ? { ...f, confidence } : f)));
-  }
-
-  function toggleFrame(frame) {
-    setFrames((prev) => prev.map((f) => (f.id === frame.id ? { ...f, selected: !f.selected } : f)));
-    previewFrame(frame);
-  }
-
-  function updateFramePhase(frameId, phaseId) {
-    setFrames((prev) => prev.map((f) => (f.id === frameId ? { ...f, phaseId } : f)));
-
-    if (selectedFrameId === frameId) {
-      const nextAnalysis = classifyFrame(currentMetrics, phaseId);
-      setStatus(`Фаза кадра обновлена: ${nextAnalysis.phase.label}. Теперь норма считается именно для неё.`);
-    }
-  }
-
-  async function analyzeSelectedFrames() {
-    const selected = frames.filter((f) => f.selected);
-    if (!selected.length) {
-      setStatus("Сначала выбери кадры кликом по картинкам.");
-      return;
-    }
-
-    setIsBusy(true);
-    setStep(3);
-    setResults([]);
-    setStatus(`Анализирую ${selected.length} выбранных кадров…`);
-
-    const nextResults = [];
-    for (const frame of selected) {
-      await previewFrame(frame);
-      const canvas = canvasRef.current;
-      const landmarker = landmarkerRef.current;
-      const img = new Image();
-      img.src = frame.dataUrl;
-      await img.decode();
-      const detected = landmarker.detect(img);
-      const metrics = drawSkeleton(canvas, img, detected.landmarks?.[0]);
-      const analysis = classifyFrame(metrics, frame.phaseId ?? DEFAULT_PHASE);
-      nextResults.push({ ...frame, metrics, analysis });
-      setResults([...nextResults]);
-      await new Promise((resolve) => setTimeout(resolve, 60));
-    }
-
-    setCurrentMetrics(nextResults[0]?.metrics ?? null);
-    setSelectedFrameId(nextResults[0]?.id ?? null);
-    setIsBusy(false);
-    setStatus("Готово. Шаг 3: смотри норму/патологию, градусы и подсказки по выбранным кадрам.");
-  }
-
-  function selectAllVisible() {
-    setFrames((prev) => prev.map((f) => ({ ...f, selected: (f.confidence ?? 0) >= 55 })));
-  }
-
-  const selectedCount = frames.filter((f) => f.selected).length;
-  const currentFrame = frames.find((f) => f.id === selectedFrameId);
-  const currentPhaseId = currentFrame?.phaseId ?? DEFAULT_PHASE;
-  const currentPhase = getPhaseById(currentPhaseId);
-  const currentAnalysis = classifyFrame(currentMetrics, currentPhaseId);
-  const pathologyCount = results.filter((r) => r.analysis.score >= 3).length;
+function AnalysisScreen({
+  status,
+  canvasRef,
+  results,
+  currentMetrics,
+  currentFrame,
+  currentPhase,
+  currentAnalysis,
+  onSetCurrentResult,
+  onUpdateFramePhase,
+  onBackToFrames,
+}) {
+  const pathologyCount = results.filter((r) => r.analysis.score >= 4).length;
   const deviationCount = results.filter((r) => r.analysis.score > 0).length;
 
   return (
     <div className="min-h-screen bg-slate-950 p-4 md:p-8 text-white">
       <div className="mx-auto max-w-7xl space-y-5">
-        <header>
-          <h1 className="text-2xl md:text-3xl font-bold">Анализ походки</h1>
-          <p className="mt-1 text-slate-300">UX: загрузка → выбор кадров → анализ выбранных кадров с нормой/патологией и подсказками.</p>
+        <header className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+          <div>
+            <div className="text-sm text-slate-400">3. Анализ выбранных кадров</div>
+            <h1 className="text-2xl md:text-3xl font-bold">Анализ выбранных кадров</h1>
+            <p className="mt-1 text-slate-300">Все выбранные кадры анализируются с привязкой к фазе походки.</p>
+          </div>
+          <button onClick={onBackToFrames} className="rounded-xl bg-slate-800 px-4 py-2 font-semibold hover:bg-slate-700">Назад к выбору кадров</button>
         </header>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div className={`rounded-2xl border p-4 ${step === 1 ? "border-blue-500 bg-blue-950/40" : "border-slate-700 bg-slate-900"}`}>
-            <div className="text-sm text-slate-400">1. Основной экран</div>
-            <div className="mt-2 font-semibold">Загрузить видео</div>
-            <label className="mt-3 inline-block cursor-pointer rounded-xl bg-blue-600 px-4 py-2 font-semibold hover:bg-blue-500">
-              Загрузить видео
-              <input type="file" accept="video/*" className="hidden" onChange={handleUpload} />
-            </label>
-          </div>
-
-          <div className={`rounded-2xl border p-4 ${step === 2 ? "border-blue-500 bg-blue-950/40" : "border-slate-700 bg-slate-900"}`}>
-            <div className="text-sm text-slate-400">2. Выбор кадров</div>
-            <div className="mt-2 font-semibold">Выбрать кадры кликом</div>
-            <button disabled={!videoUrl || isBusy} onClick={extractFrames} className="mt-3 rounded-xl bg-emerald-600 px-4 py-2 font-semibold hover:bg-emerald-500 disabled:opacity-50">
-              {isBusy ? "Жди…" : "Нарезать кадры"}
-            </button>
-          </div>
-
-          <div className={`rounded-2xl border p-4 ${step === 3 ? "border-blue-500 bg-blue-950/40" : "border-slate-700 bg-slate-900"}`}>
-            <div className="text-sm text-slate-400">3. Анализ</div>
-            <div className="mt-2 font-semibold">Норма / патология</div>
-            <button disabled={!selectedCount || isBusy} onClick={analyzeSelectedFrames} className="mt-3 rounded-xl bg-fuchsia-600 px-4 py-2 font-semibold hover:bg-fuchsia-500 disabled:opacity-50">
-              Анализировать выбранные
-            </button>
-          </div>
-        </div>
-
         <div className="rounded-2xl border border-slate-700 bg-slate-900 p-3 text-sm text-slate-200">{status}</div>
-        <video ref={videoRef} src={videoUrl ?? undefined} muted playsInline className="hidden" />
 
-        {step === 2 && (
-          <section className="rounded-2xl border border-slate-700 bg-slate-900 p-4">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-xl font-semibold">Выбор кадров</h2>
-                <p className="text-sm text-slate-400">Клик по картинке = выбрать/снять. Мини-кнопок больше нет.</p>
-              </div>
-              <div className="flex gap-2">
-                <button disabled={!frames.length} onClick={selectAllVisible} className="rounded-xl bg-slate-800 px-3 py-2 text-sm font-semibold hover:bg-slate-700 disabled:opacity-50">Выбрать качественные</button>
-                <button disabled={!selectedCount} onClick={analyzeSelectedFrames} className="rounded-xl bg-fuchsia-600 px-3 py-2 text-sm font-semibold hover:bg-fuchsia-500 disabled:opacity-50">Анализировать</button>
-              </div>
+        <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-4">
+          <main className="space-y-4">
+            <div className="rounded-2xl border border-slate-700 bg-black overflow-hidden">
+              <canvas ref={canvasRef} className="block w-full h-auto" />
+              {!currentMetrics && <div className="flex aspect-video items-center justify-center text-slate-400">Выбери кадр справа</div>}
             </div>
 
-            {frames.length ? (
+            <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="font-semibold">Все выбранные кадры с анализом</h2>
+                <div className="text-sm text-slate-300">Отклонения: {deviationCount}/{results.length}; патологичность/плохой кадр: {pathologyCount}/{results.length}</div>
+              </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-3">
-                {frames.map((frame) => (
-                  <button key={frame.id} onClick={() => toggleFrame(frame)} className={`relative overflow-hidden rounded-xl border-2 ${frame.selected ? "border-emerald-500" : selectedFrameId === frame.id ? "border-blue-500" : "border-slate-700"}`}>
-                    <img src={frame.dataUrl} alt={`Кадр ${frame.id + 1}`} className="aspect-video w-full object-cover" />
-                    <div className="absolute left-1 top-1 rounded bg-black/75 px-1.5 py-0.5 text-[10px]">{frame.id + 1}</div>
-                    <div className="absolute right-1 top-1 rounded bg-black/75 px-1.5 py-0.5 text-[10px]">{frame.confidence === null ? "—" : `${frame.confidence}%`}</div>
-                    <div className="absolute left-1 bottom-6 rounded bg-black/75 px-1.5 py-0.5 text-[10px]">
-                      {getPhaseById(frame.phaseId)?.label}
-                    </div>
-                    <div className={`absolute inset-x-0 bottom-0 py-1 text-center text-xs font-bold ${frame.selected ? "bg-emerald-500" : "bg-black/70"}`}>{frame.selected ? "✓ выбрано" : "клик = выбрать"}</div>
+                {results.map((r) => (
+                  <button
+                    key={r.id}
+                    onClick={() => onSetCurrentResult(r)}
+                    className={`relative overflow-hidden rounded-xl border-2 text-left ${
+                      currentFrame?.id === r.id ? "border-blue-500" : r.analysis.score >= 4 ? "border-rose-600" : r.analysis.score > 0 ? "border-amber-500" : "border-emerald-600"
+                    }`}
+                  >
+                    <img src={r.dataUrl} alt={`Кадр ${r.id + 1}`} className="aspect-video w-full object-cover" />
+                    <div className="absolute left-1 top-1 rounded bg-black/75 px-1.5 py-0.5 text-[10px]">{r.id + 1}</div>
+                    <div className="absolute inset-x-0 bottom-0 bg-black/75 px-2 py-1 text-xs">score {r.analysis.score}</div>
                   </button>
                 ))}
               </div>
-            ) : (
-              <div className="rounded-xl bg-slate-950 p-8 text-center text-slate-400">Нажми “Нарезать кадры”.</div>
-            )}
-          </section>
-        )}
-
-        <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-4">
-          <main className="rounded-2xl border border-slate-700 bg-black overflow-hidden">
-            <canvas ref={canvasRef} className="block w-full h-auto" />
-            {!currentMetrics && <div className="flex aspect-video items-center justify-center text-slate-400">Здесь будет кадр со скелетом</div>}
+            </div>
           </main>
 
           <aside className="space-y-4">
             <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4">
               <h2 className="text-lg font-semibold">Фаза кадра</h2>
-              <p className="mt-1 text-sm text-slate-400">Сначала выбери фазу. Норма/патология считается только относительно неё.</p>
+              <p className="mt-1 text-sm text-slate-400">Норма/патология считается относительно выбранной фазы.</p>
               <select
-                value={currentPhaseId}
-                disabled={selectedFrameId === null}
-                onChange={(e) => updateFramePhase(selectedFrameId, e.target.value)}
+                value={currentFrame?.phaseId ?? DEFAULT_PHASE}
+                disabled={!currentFrame}
+                onChange={(e) => onUpdateFramePhase(currentFrame.id, e.target.value)}
                 className="mt-3 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white disabled:opacity-50"
               >
                 {GAIT_PHASES.map((phase) => (
@@ -609,7 +435,8 @@ export default function FullSkeletonGaitAnalyzer() {
                 <div>Голеностоп: {currentPhase?.norms.ankle.min}–{currentPhase?.norms.ankle.max}°</div>
               </div>
             </div>
-            <div className={`rounded-2xl border p-4 ${currentAnalysis.score >= 3 ? "border-rose-600 bg-rose-950/40" : currentAnalysis.score > 0 ? "border-amber-600 bg-amber-950/30" : "border-emerald-700 bg-emerald-950/30"}`}>
+
+            <div className={`rounded-2xl border p-4 ${currentAnalysis.score >= 4 ? "border-rose-600 bg-rose-950/40" : currentAnalysis.score > 0 ? "border-amber-600 bg-amber-950/30" : "border-emerald-700 bg-emerald-950/30"}`}>
               <h2 className="text-lg font-semibold">Норма / патология</h2>
               <div className="mt-2 text-2xl font-bold">{currentAnalysis.verdict}</div>
               <div className="mt-1 text-sm text-slate-300">pathology score: {currentAnalysis.score}</div>
@@ -618,7 +445,7 @@ export default function FullSkeletonGaitAnalyzer() {
             <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4">
               <h2 className="mb-3 text-lg font-semibold">Отклонения от нормы: {currentPhase?.label}</h2>
               <div className="grid grid-cols-2 gap-2">
-                <Metric label="Confidence" value={currentMetrics ? `${currentMetrics.confidence}%` : null} norm="≥55%" bad={(currentMetrics?.confidence ?? 100) < 55} />
+                <Metric label="Confidence" value={currentMetrics ? `${currentMetrics.confidence}%` : null} norm={`≥${MIN_CONFIDENCE}%`} bad={(currentMetrics?.confidence ?? 100) < MIN_CONFIDENCE} />
                 <Metric label="L колено" value={currentMetrics?.leftKnee ? `${currentMetrics.leftKnee}°` : null} norm={`${currentPhase?.norms.knee.min}–${currentPhase?.norms.knee.max}°`} bad={isOutsideNorm(currentMetrics?.leftKnee, currentPhase?.norms.knee)} />
                 <Metric label="R колено" value={currentMetrics?.rightKnee ? `${currentMetrics.rightKnee}°` : null} norm={`${currentPhase?.norms.knee.min}–${currentPhase?.norms.knee.max}°`} bad={isOutsideNorm(currentMetrics?.rightKnee, currentPhase?.norms.knee)} />
                 <Metric label="L голеностоп" value={currentMetrics?.leftAnkle ? `${currentMetrics.leftAnkle}°` : null} norm={`${currentPhase?.norms.ankle.min}–${currentPhase?.norms.ankle.max}°`} bad={isOutsideNorm(currentMetrics?.leftAnkle, currentPhase?.norms.ankle)} />
@@ -633,25 +460,243 @@ export default function FullSkeletonGaitAnalyzer() {
                 {currentAnalysis.flags.map((flag, i) => <li key={i}>• {flag}</li>)}
               </ul>
             </div>
-
-            {results.length > 0 && (
-              <div className="rounded-2xl border border-slate-700 bg-slate-900 p-4">
-                <h2 className="mb-3 text-lg font-semibold">Все выбранные кадры</h2>
-                <div className="mb-3 text-sm text-slate-300">Отклонения: {deviationCount}/{results.length}; патологичность/плохой кадр: {pathologyCount}/{results.length}</div>
-                <div className="grid grid-cols-2 gap-2">
-                  {results.map((r) => (
-                    <button key={r.id} onClick={() => { setCurrentMetrics(r.metrics); setSelectedFrameId(r.id); }} className={`rounded-xl border p-2 text-left text-xs ${r.analysis.score >= 3 ? "border-rose-600 bg-rose-950/40" : r.analysis.score > 0 ? "border-amber-600 bg-amber-950/30" : "border-emerald-700 bg-emerald-950/30"}`}>
-                      <div className="font-semibold">Кадр {r.id + 1}</div>
-                      <div>{r.analysis.verdict}</div>
-                      <div className="text-slate-400">score {r.analysis.score}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
           </aside>
         </div>
       </div>
     </div>
+  );
+}
+
+export default function FullSkeletonGaitAnalyzer() {
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const landmarkerRef = useRef(null);
+
+  const [step, setStep] = useState(1);
+  const [status, setStatus] = useState("Загружается модель MediaPipe…");
+  const [videoUrl, setVideoUrl] = useState(null);
+  const [frames, setFrames] = useState([]);
+  const [results, setResults] = useState([]);
+  const [selectedFrameId, setSelectedFrameId] = useState(null);
+  const [currentResultId, setCurrentResultId] = useState(null);
+  const [currentMetrics, setCurrentMetrics] = useState(null);
+  const [isBusy, setIsBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function init() {
+      try {
+        const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
+        const landmarker = await PoseLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
+          runningMode: "IMAGE",
+          numPoses: 1,
+          minPoseDetectionConfidence: 0.45,
+          minPosePresenceConfidence: 0.45,
+          minTrackingConfidence: 0.45,
+        });
+        if (!cancelled) {
+          landmarkerRef.current = landmarker;
+          setStatus("Модель готова. Загрузите видео.");
+        }
+      } catch (error) {
+        console.error(error);
+        setStatus("Ошибка загрузки MediaPipe. Проверь @mediapipe/tasks-vision.");
+      }
+    }
+
+    init();
+    return () => {
+      cancelled = true;
+      landmarkerRef.current?.close();
+    };
+  }, []);
+
+  function handleUpload(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    if (videoUrl) URL.revokeObjectURL(videoUrl);
+    const url = URL.createObjectURL(file);
+
+    setVideoUrl(url);
+    setFrames([]);
+    setResults([]);
+    setSelectedFrameId(null);
+    setCurrentResultId(null);
+    setCurrentMetrics(null);
+    setStep(2);
+    setStatus("Видео загружено. Нажми “Нарезать кадры”.");
+  }
+
+  async function extractFrames() {
+    const video = videoRef.current;
+    if (!video || !videoUrl) return;
+
+    setIsBusy(true);
+    setStatus("Нарезаю видео на кадры…");
+
+    await new Promise((resolve) => {
+      if (video.readyState >= 2) resolve();
+      else video.onloadedmetadata = resolve;
+    });
+
+    const duration = video.duration || 1;
+    const count = Math.min(40, Math.max(12, Math.floor(duration * 8)));
+    const temp = document.createElement("canvas");
+    const ctx = temp.getContext("2d");
+
+    temp.width = video.videoWidth;
+    temp.height = video.videoHeight;
+
+    const nextFrames = [];
+
+    for (let i = 0; i < count; i += 1) {
+      const time = Math.min(duration - 0.05, (duration / count) * i);
+      video.currentTime = time;
+      await new Promise((resolve) => {
+        video.onseeked = resolve;
+      });
+
+      ctx.drawImage(video, 0, 0, temp.width, temp.height);
+      nextFrames.push({
+        id: i,
+        time,
+        dataUrl: temp.toDataURL("image/jpeg", 0.88),
+        selected: false,
+        confidence: null,
+        phaseId: DEFAULT_PHASE,
+      });
+    }
+
+    setFrames(nextFrames);
+    setResults([]);
+    setSelectedFrameId(null);
+    setCurrentResultId(null);
+    setCurrentMetrics(null);
+    setIsBusy(false);
+    setStatus("Кадры готовы. Выбирай кадры кликом по картинкам.");
+  }
+
+  async function detectFrame(frame) {
+    const landmarker = landmarkerRef.current;
+    if (!landmarker || !frame) return null;
+
+    const img = new Image();
+    img.src = frame.dataUrl;
+    await img.decode();
+
+    const detected = landmarker.detect(img);
+    return { img, metrics: drawSkeleton(canvasRef.current ?? document.createElement("canvas"), img, detected.landmarks?.[0]) };
+  }
+
+  async function toggleFrame(frame) {
+    const nextSelected = !frame.selected;
+    setFrames((prev) => prev.map((f) => (f.id === frame.id ? { ...f, selected: nextSelected } : f)));
+    setSelectedFrameId(frame.id);
+
+    if (frame.confidence === null) {
+      const detected = await detectFrame(frame);
+      const confidence = detected?.metrics?.confidence ?? 0;
+      setFrames((prev) => prev.map((f) => (f.id === frame.id ? { ...f, confidence } : f)));
+    }
+  }
+
+  async function analyzeSelectedFrames() {
+    const selected = frames.filter((f) => f.selected);
+    if (!selected.length) {
+      setStatus("Сначала выбери кадры кликом по картинкам.");
+      return;
+    }
+
+    setIsBusy(true);
+    setStatus(`Анализирую выбранные кадры: ${selected.length} шт.`);
+
+    const nextResults = [];
+    for (const frame of selected) {
+      const detected = await detectFrame(frame);
+      const metrics = detected?.metrics ?? null;
+      const analysis = classifyFrame(metrics, frame.phaseId ?? DEFAULT_PHASE);
+      nextResults.push({ ...frame, metrics, analysis });
+    }
+
+    setResults(nextResults);
+    setIsBusy(false);
+    setStep(3);
+    setStatus("Готово. Смотри выбранные кадры, норму/патологию, градусы и подсказки.");
+
+    if (nextResults[0]) {
+      await setCurrentResult(nextResults[0]);
+    }
+  }
+
+  async function setCurrentResult(result) {
+    if (!result) return;
+
+    setCurrentResultId(result.id);
+    setCurrentMetrics(result.metrics);
+
+    const img = new Image();
+    img.src = result.dataUrl;
+    await img.decode();
+
+    const landmarker = landmarkerRef.current;
+    const detected = landmarker.detect(img);
+    drawSkeleton(canvasRef.current, img, detected.landmarks?.[0]);
+  }
+
+  function updateFramePhase(frameId, phaseId) {
+    setFrames((prev) => prev.map((f) => (f.id === frameId ? { ...f, phaseId } : f)));
+    setResults((prev) =>
+      prev.map((r) => {
+        if (r.id !== frameId) return r;
+        const analysis = classifyFrame(r.metrics, phaseId);
+        return { ...r, phaseId, analysis };
+      })
+    );
+    setStatus(`Фаза кадра обновлена: ${getPhaseById(phaseId)?.label}.`);
+  }
+
+  const selectedCount = frames.filter((f) => f.selected).length;
+  const currentFrame = results.find((r) => r.id === currentResultId) ?? results[0] ?? null;
+  const currentPhase = getPhaseById(currentFrame?.phaseId ?? DEFAULT_PHASE);
+  const currentAnalysis = currentFrame?.analysis ?? classifyFrame(currentMetrics, currentFrame?.phaseId ?? DEFAULT_PHASE);
+
+  if (step === 1) {
+    return <UploadScreen status={status} onUpload={handleUpload} />;
+  }
+
+  if (step === 2) {
+    return (
+      <FrameSelectionScreen
+        status={status}
+        videoUrl={videoUrl}
+        videoRef={videoRef}
+        frames={frames}
+        selectedCount={selectedCount}
+        selectedFrameId={selectedFrameId}
+        isBusy={isBusy}
+        onExtractFrames={extractFrames}
+        onToggleFrame={toggleFrame}
+        onAnalyzeSelected={analyzeSelectedFrames}
+        onBack={() => setStep(1)}
+      />
+    );
+  }
+
+  return (
+    <AnalysisScreen
+      status={status}
+      canvasRef={canvasRef}
+      results={results}
+      currentMetrics={currentMetrics}
+      currentFrame={currentFrame}
+      currentPhase={currentPhase}
+      currentAnalysis={currentAnalysis}
+      onSetCurrentResult={setCurrentResult}
+      onUpdateFramePhase={updateFramePhase}
+      onBackToFrames={() => setStep(2)}
+    />
   );
 }
