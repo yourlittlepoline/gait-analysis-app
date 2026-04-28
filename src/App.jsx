@@ -122,13 +122,9 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    return () => {
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
-      Object.values(photoUrls).forEach((url) => url && URL.revokeObjectURL(url));
-      videoFrameOptions.forEach((frame) => frame.url && URL.revokeObjectURL(frame.url));
-    };
-  }, [videoUrl, photoUrls, videoFrameOptions]);
+  // Не чистим objectURL через useEffect с зависимостями.
+  // Иначе React может отозвать фото-URL прямо перед анализом, и фото-анализ зависнет.
+  // Чистим URL точечно: при замене файла и при полном сбросе.
 
   const needsVideo = mode === ANALYSIS_MODES.VIDEO || mode === ANALYSIS_MODES.BOTH;
   const needsPhoto = mode === ANALYSIS_MODES.PHOTO || mode === ANALYSIS_MODES.BOTH;
@@ -143,6 +139,10 @@ function App() {
   }, [poseLandmarker, mode, needsVideo, needsPhoto, selectedFrameIds, photos]);
 
   function resetAll() {
+    if (videoUrl) URL.revokeObjectURL(videoUrl);
+    Object.values(photoUrls).forEach((url) => url && URL.revokeObjectURL(url));
+    videoFrameOptions.forEach((frame) => frame.url && URL.revokeObjectURL(frame.url));
+
     setScreen("mode");
     setMode(null);
     setVideoFile(null);
@@ -640,7 +640,26 @@ async function extractVideoFrames(videoUrl, count) {
 }
 
 async function analyzeImageSource({ poseLandmarker, sourceUrl, label, type, view, time }) {
-  const image = await loadImage(sourceUrl);
+  let image;
+
+  try {
+    image = await loadImage(sourceUrl);
+  } catch (e) {
+    return {
+      id: `${type}-${view}-${time ?? label}`,
+      label,
+      type,
+      view,
+      time,
+      sourceUrl,
+      annotatedUrl: null,
+      poseFound: false,
+      metrics: {},
+      hints: ["Не удалось загрузить изображение для анализа. Попробуй загрузить фото заново."],
+      limitations: ["Файл не прочитан браузером, поэтому MediaPipe не запускался."],
+    };
+  }
+
   const result = poseLandmarker.detect(image);
   const landmarks = result.landmarks?.[0] || null;
 
@@ -698,6 +717,9 @@ function computeMetrics(landmarks, view) {
   const rightLegAxis = lineAngle(l("rightHip"), l("rightAnkle"));
   const leftKneeValgus = frontalKneeOffset(l("leftHip"), l("leftKnee"), l("leftAnkle"));
   const rightKneeValgus = frontalKneeOffset(l("rightHip"), l("rightKnee"), l("rightAnkle"));
+  const shoulderWidth = distance(l("leftShoulder"), l("rightShoulder"));
+  const trunkLean = trunkLeanAngle(l("leftShoulder"), l("rightShoulder"), l("leftHip"), l("rightHip"));
+  const headForward = forwardHeadRatio(l("nose"), l("leftShoulder"), l("rightShoulder"), shoulderWidth);
 
   const metrics = {
     leftKneeAngle,
@@ -712,6 +734,8 @@ function computeMetrics(landmarks, view) {
     rightLegAxis,
     leftKneeValgus,
     rightKneeValgus,
+    trunkLean,
+    headForward,
   };
 
   if (view === VIEWS.SIDE) {
@@ -723,6 +747,10 @@ function computeMetrics(landmarks, view) {
     metrics.frontalKneeAsymmetry = absDiff(leftKneeValgus, rightKneeValgus);
     metrics.pelvisTiltAbs = Math.abs(pelvisTilt ?? 0);
     metrics.shoulderTiltAbs = Math.abs(shoulderTilt ?? 0);
+  }
+
+  if (view === VIEWS.SIDE) {
+    metrics.postureQuality = estimatePostureQuality(metrics);
   }
 
   return metrics;
@@ -749,6 +777,18 @@ function buildHints(metrics, view, type) {
   }
 
   if (view === VIEWS.SIDE) {
+    if (Number.isFinite(metrics.trunkLean) && Math.abs(metrics.trunkLean) > 8) {
+      hints.push("Корпус заметно наклонен. На фото сбоку это может указывать на сутулость, компенсацию балансом или привычный перенос центра массы.");
+    }
+
+    if (Number.isFinite(metrics.headForward) && Math.abs(metrics.headForward) > 0.22) {
+      hints.push("Голова заметно выведена вперед относительно плеч. Это снижает качество осанки и может менять баланс всей цепи сверху вниз.");
+    }
+
+    if (Number.isFinite(metrics.postureQuality) && metrics.postureQuality < 65) {
+      hints.push("Качество осанки по простому фото-скринингу снижено: проверь грудной кифоз, положение головы и привычный наклон корпуса.");
+    }
+
     if (Number.isFinite(metrics.leftFootPitch) && metrics.leftFootPitch < -10) {
       hints.push("Левая стопа визуально уходит носком вниз. Проверь дорсифлексию, клиренс носка и достаточность поддержки переднего отдела стопы.");
     }
@@ -957,6 +997,44 @@ function frontalKneeOffset(hip, knee, ankle) {
   return numerator / denominator;
 }
 
+function distance(a, b) {
+  if (!a || !b) return null;
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function midpoint(a, b) {
+  if (!a || !b) return null;
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
+
+function trunkLeanAngle(leftShoulder, rightShoulder, leftHip, rightHip) {
+  const shoulderMid = midpoint(leftShoulder, rightShoulder);
+  const hipMid = midpoint(leftHip, rightHip);
+  if (!shoulderMid || !hipMid) return null;
+
+  // 0° примерно вертикально. Плюс/минус — наклон корпуса относительно вертикали кадра.
+  return radiansToDegrees(Math.atan2(shoulderMid.x - hipMid.x, hipMid.y - shoulderMid.y));
+}
+
+function forwardHeadRatio(nose, leftShoulder, rightShoulder, shoulderWidth) {
+  const shoulderMid = midpoint(leftShoulder, rightShoulder);
+  if (!nose || !shoulderMid || !shoulderWidth) return null;
+
+  // Нормализуем смещение головы на ширину плеч, чтобы не зависеть от масштаба фото.
+  return (nose.x - shoulderMid.x) / shoulderWidth;
+}
+
+function estimatePostureQuality(metrics) {
+  let score = 100;
+
+  if (Number.isFinite(metrics.trunkLean)) score -= Math.min(30, Math.abs(metrics.trunkLean) * 2.2);
+  if (Number.isFinite(metrics.headForward)) score -= Math.min(30, Math.abs(metrics.headForward) * 90);
+  if (Number.isFinite(metrics.shoulderTiltAbs)) score -= Math.min(15, metrics.shoulderTiltAbs * 1.5);
+  if (Number.isFinite(metrics.pelvisTiltAbs)) score -= Math.min(20, metrics.pelvisTiltAbs * 2);
+
+  return clamp(score, 0, 100);
+}
+
 function absDiff(a, b) {
   if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
   return Math.abs(a - b);
@@ -1004,8 +1082,18 @@ function canvasToBlob(canvas) {
 function loadImage(url) {
   return new Promise((resolve, reject) => {
     const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = reject;
+    const timeout = setTimeout(() => reject(new Error("Image load timeout")), 12000);
+
+    image.onload = () => {
+      clearTimeout(timeout);
+      resolve(image);
+    };
+
+    image.onerror = (e) => {
+      clearTimeout(timeout);
+      reject(e);
+    };
+
     image.src = url;
   });
 }
@@ -1042,6 +1130,9 @@ function metricLabel(key) {
     frontalKneeAsymmetry: "Фронтальная асимметрия",
     pelvisTiltAbs: "Перекос таза",
     shoulderTiltAbs: "Перекос плеч",
+    trunkLean: "Наклон корпуса",
+    headForward: "Голова вперед",
+    postureQuality: "Качество осанки",
     leftShoulder: "левое плечо",
     rightShoulder: "правое плечо",
     leftHip: "левый таз",
