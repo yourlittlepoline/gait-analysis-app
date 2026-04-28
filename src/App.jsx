@@ -517,9 +517,9 @@ function ResultsScreen({ isAnalyzing, analysis, onBack, onReset }) {
       <section className="rounded-3xl border border-cyan-400/30 bg-cyan-400/10 p-5">
         <h3 className="text-xl font-bold text-cyan-100">Общий вывод</h3>
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
-          <SummaryBlock title="Что видно" items={analysis.summary.observations} />
-          <SummaryBlock title="Что проверить" items={analysis.summary.checks} />
-          <SummaryBlock title="Для ортеза" items={analysis.summary.orthosisHints} />
+          <SummaryBlock title="Оценка" items={analysis.summary.zones} />
+          <SummaryBlock title="Что отличается от нормы" items={analysis.summary.deviations} />
+          <SummaryBlock title="Что проверить / уточнить" items={analysis.summary.nextSteps} />
         </div>
       </section>
 
@@ -537,8 +537,17 @@ function SummaryBlock({ title, items }) {
     <div className="rounded-2xl border border-slate-700 bg-slate-950/70 p-4">
       <h4 className="font-semibold">{title}</h4>
       <ul className="mt-3 space-y-2 text-sm text-slate-300">
-        {items.length ? items.map((item, index) => <li key={index}>• {item}</li>) : <li>Нет выраженных признаков.</li>}
+        {items?.length ? items.map((item, index) => <li key={index}>• {item}</li>) : <li>Нет выраженных признаков.</li>}
       </ul>
+    </div>
+  );
+}
+
+function ZoneBadge({ zone }) {
+  return (
+    <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
+      <h4 className="font-semibold">Оценка близости к норме</h4>
+      <p className="mt-3 text-lg font-bold text-cyan-200">{zoneLabel(zone)}</p>
     </div>
   );
 }
@@ -563,8 +572,12 @@ function AnalysisCard({ item }) {
           )}
         </div>
         <div className="space-y-4 p-4">
+          <ZoneBadge zone={item.zone} />
           <MetricList title="Измерения" metrics={item.metrics} />
-          <SummaryBlock title="Подсказки" items={item.hints} />
+          <SummaryBlock title="Что отличается от нормы" items={item.deviations} />
+          <SummaryBlock title="Что проверить дополнительно" items={item.checks} />
+          <SummaryBlock title="Что уточнить" items={item.questions} />
+          <SummaryBlock title="Команды / фокус" items={item.cues} />
           <SummaryBlock title="Ограничения кадра" items={item.limitations} />
         </div>
       </div>
@@ -680,7 +693,7 @@ async function analyzeImageSource({ poseLandmarker, sourceUrl, label, type, view
   }
 
   const metrics = computeMetrics(landmarks, view);
-  const hints = buildHints(metrics, view, type);
+  const structured = buildStructuredFindings(metrics, view, type);
   const limitations = buildLimitations(landmarks, metrics, view);
   const annotatedUrl = drawAnnotatedImage(image, landmarks, metrics);
 
@@ -694,7 +707,12 @@ async function analyzeImageSource({ poseLandmarker, sourceUrl, label, type, view
     annotatedUrl,
     poseFound: true,
     metrics,
-    hints,
+    zone: structured.zone,
+    deviations: structured.deviations,
+    checks: structured.checks,
+    questions: structured.questions,
+    cues: structured.cues,
+    hints: flattenStructuredFindings(structured),
     limitations,
   };
 }
@@ -756,8 +774,12 @@ function computeMetrics(landmarks, view) {
   return metrics;
 }
 
-function buildHints(metrics, view, type) {
-  const hints = [];
+function buildStructuredFindings(metrics, view, type) {
+  const deviations = [];
+  const checks = [];
+  const questions = [];
+  const cues = [];
+  let score = 0;
 
   const kneeMin = Math.min(validNumber(metrics.leftKneeAngle), validNumber(metrics.rightKneeAngle));
   const ankleAsymmetry = metrics.footPitchAsymmetry;
@@ -767,55 +789,122 @@ function buildHints(metrics, view, type) {
 
   if (type === "videoFrame") {
     if (Number.isFinite(kneeMin) && kneeMin < 145) {
-      hints.push("Есть выраженное сгибание колена в выбранном кадре. Проверь, не уходит ли пациент в crouch / компенсаторное приседание.");
-      hints.push("Для ортеза: проверить высоту, жесткость, ограничение тыльной флексии и контроль колена в опоре.");
+      score += 2;
+      deviations.push("колено заметно сгибается и не удерживается близко к прямому положению");
+      checks.push("проверить контроль колена в опоре");
+      questions.push("есть ли ощущение, что колено подламывается или проваливается");
+      cues.push("удерживать ногу прямее");
     }
 
     if (Number.isFinite(ankleAsymmetry) && ankleAsymmetry > 18) {
-      hints.push("Стопы выглядят несимметрично по углу. Проверь, нет ли зацепа носком, падения стопы или компенсации через разворот стопы.");
+      score += 2;
+      deviations.push("стопы двигаются несимметрично");
+      checks.push("проверить клиренс носка и контроль стопы при переносе ноги");
+      questions.push("цепляется ли носком за пол");
+      cues.push("поднимать носок выше");
     }
   }
 
   if (view === VIEWS.SIDE) {
     if (Number.isFinite(metrics.trunkLean) && Math.abs(metrics.trunkLean) > 8) {
-      hints.push("Корпус заметно наклонен. На фото сбоку это может указывать на сутулость, компенсацию балансом или привычный перенос центра массы.");
+      score += Math.abs(metrics.trunkLean) > 14 ? 2 : 1;
+      deviations.push("корпус заметно наклоняется относительно вертикали");
+      checks.push("оценить наклон корпуса во время шага и возможную компенсацию балансом");
+      questions.push("становится ли сложнее идти ровно при усталости");
+      cues.push("держать корпус ровнее");
     }
 
     if (Number.isFinite(metrics.headForward) && Math.abs(metrics.headForward) > 0.22) {
-      hints.push("Голова заметно выведена вперед относительно плеч. Это снижает качество осанки и может менять баланс всей цепи сверху вниз.");
+      score += 1;
+      deviations.push("голова выведена вперед относительно плеч");
+      checks.push("посмотреть положение головы, шеи и верхней части спины");
+      cues.push("смотреть вперед и не заваливать голову");
     }
 
     if (Number.isFinite(metrics.postureQuality) && metrics.postureQuality < 65) {
-      hints.push("Качество осанки по простому фото-скринингу снижено: проверь грудной кифоз, положение головы и привычный наклон корпуса.");
+      score += 1;
+      deviations.push("осанка на боковом кадре отличается от нейтральной");
+      checks.push("оценить грудной отдел, положение головы и наклон корпуса");
     }
 
     if (Number.isFinite(metrics.leftFootPitch) && metrics.leftFootPitch < -10) {
-      hints.push("Левая стопа визуально уходит носком вниз. Проверь дорсифлексию, клиренс носка и достаточность поддержки переднего отдела стопы.");
+      score += 2;
+      deviations.push("левая стопа опускается носком вниз");
+      checks.push("проверить клиренс левого носка");
+      questions.push("цепляется ли левый носок за пол");
+      cues.push("поднимать левый носок выше");
     }
+
     if (Number.isFinite(metrics.rightFootPitch) && metrics.rightFootPitch < -10) {
-      hints.push("Правая стопа визуально уходит носком вниз. Проверь дорсифлексию, клиренс носка и достаточность поддержки переднего отдела стопы.");
+      score += 2;
+      deviations.push("правая стопа опускается носком вниз");
+      checks.push("проверить клиренс правого носка");
+      questions.push("цепляется ли правый носок за пол");
+      cues.push("поднимать правый носок выше");
     }
   }
 
   if (view === VIEWS.FRONT || view === VIEWS.BACK) {
     if (Number.isFinite(frontalKneeAsymmetry) && frontalKneeAsymmetry > 0.08) {
-      hints.push("Есть фронтальная асимметрия коленей. Проверь вальгус/варус, ротацию бедра и положение стоп в обуви/ортезе.");
+      score += frontalKneeAsymmetry > 0.14 ? 2 : 1;
+      deviations.push("колени стоят или двигаются несимметрично во фронтальной плоскости");
+      checks.push("проверить положение коленей относительно стоп и таза");
+      questions.push("есть ли боль или дискомфорт в колене, стопе или бедре");
+      cues.push("удерживать колени ровнее");
     }
 
     if (Number.isFinite(pelvisTiltAbs) && pelvisTiltAbs > 4) {
-      hints.push("Таз стоит с заметным наклоном. Проверь разницу длины, перекос таза, высоту обуви/ортеза и компенсацию корпусом.");
+      score += pelvisTiltAbs > 8 ? 2 : 1;
+      deviations.push("таз расположен не параллельно полу");
+      checks.push("оценить перекос таза, симметрию опоры и распределение веса");
+      questions.push("есть ли ощущение, что на одну ногу опираться легче");
+      cues.push("распределить вес на обе ноги");
     }
 
     if (Number.isFinite(shoulderTiltAbs) && shoulderTiltAbs > 5) {
-      hints.push("Плечи заметно наклонены. Это может быть компенсация сверху, а не первичная проблема ноги.");
+      score += shoulderTiltAbs > 10 ? 2 : 1;
+      deviations.push("плечи расположены не параллельно полу");
+      checks.push("оценить компенсацию корпусом и положение плечевого пояса");
+      cues.push("держать плечи ровнее");
     }
   }
 
-  if (!hints.length) {
-    hints.push("Грубых визуальных отклонений по этим эвристикам нет. Сравни с клиническим осмотром и видео до/после ортеза.");
+  if (!deviations.length) {
+    deviations.push("выраженных отличий от нормы по выбранному кадру не видно");
+    checks.push("проверить качество кадра и при необходимости выбрать другой момент шага");
   }
 
-  return hints;
+  return {
+    zone: scoreToZone(score),
+    deviations: unique(deviations),
+    checks: unique(checks),
+    questions: unique(questions),
+    cues: unique(cues),
+  };
+}
+
+function flattenStructuredFindings(structured) {
+  return [
+    ...structured.deviations,
+    ...structured.checks,
+    ...structured.questions,
+    ...structured.cues,
+  ];
+}
+
+function scoreToZone(score) {
+  if (score <= 0) return "normal";
+  if (score <= 2) return "mild";
+  if (score <= 5) return "moderate";
+  return "severe";
+}
+
+function zoneLabel(zone) {
+  if (zone === "normal") return "Близко к норме";
+  if (zone === "mild") return "Есть отклонения";
+  if (zone === "moderate") return "Заметные отклонения";
+  if (zone === "severe") return "Сильно отличается от нормы";
+  return "Нет оценки";
 }
 
 function buildLimitations(landmarks, metrics, view) {
@@ -846,57 +935,59 @@ function buildLimitations(landmarks, metrics, view) {
 
 function buildCombinedSummary(videoItems, photoItems, mode) {
   const allItems = [...videoItems, ...photoItems];
-  const allHints = allItems.flatMap((item) => item.hints || []);
-  const observations = [];
-  const checks = [];
-  const orthosisHints = [];
+  const analyzedItems = allItems.filter((item) => item.poseFound);
+
+  const zones = [];
+  const deviations = [];
+  const nextSteps = [];
 
   const videoPoseFound = videoItems.filter((item) => item.poseFound).length;
   const photoPoseFound = photoItems.filter((item) => item.poseFound).length;
 
   if (mode === ANALYSIS_MODES.BOTH) {
-    observations.push(`Совмещены источники: видео-кадров с найденным скелетом — ${videoPoseFound}, фото с найденным скелетом — ${photoPoseFound}.`);
+    zones.push(`Проанализировано: видео-кадров — ${videoPoseFound}, фото — ${photoPoseFound}.`);
   } else if (mode === ANALYSIS_MODES.VIDEO) {
-    observations.push(`Проанализировано видео-кадров с найденным скелетом: ${videoPoseFound}.`);
+    zones.push(`Проанализировано видео-кадров: ${videoPoseFound}.`);
   } else {
-    observations.push(`Проанализировано фото с найденным скелетом: ${photoPoseFound}.`);
+    zones.push(`Проанализировано фото: ${photoPoseFound}.`);
   }
 
-  if (allHints.some((hint) => hint.includes("носком вниз") || hint.includes("клиренс"))) {
-    observations.push("Есть признаки возможной проблемы с клиренсом носка или контролем стопы.");
-    checks.push("Проверить активную/пассивную дорсифлексию, силу разгибателей стопы и момент зацепа носком в видео.");
-    orthosisHints.push("Проверить, хватает ли ортезу контроля переднего отдела стопы и не нужна ли настройка угла/жесткости.");
+  const worstZone = getWorstZone(analyzedItems.map((item) => item.zone));
+  zones.push(zoneLabel(worstZone));
+
+  analyzedItems.forEach((item) => {
+    item.deviations?.forEach((text) => deviations.push(`${item.label}: ${text}`));
+    item.checks?.forEach((text) => nextSteps.push(`Проверить: ${text}`));
+    item.questions?.forEach((text) => nextSteps.push(`Уточнить: ${text}`));
+  });
+
+  if (!analyzedItems.length) {
+    deviations.push("Не удалось получить надежный анализ: скелет не найден или файл не прочитан.");
+    nextSteps.push("Загрузить кадр в полный рост с хорошим светом и видимыми стопами, коленями, тазом и плечами.");
   }
 
-  if (allHints.some((hint) => hint.includes("crouch") || hint.includes("сгибание колена"))) {
-    observations.push("Есть признаки повышенного сгибания колена в опоре или кадре шага.");
-    checks.push("Проверить контроль колена в stance, контрактуры, слабость разгибателей и компенсации тазом/корпусом.");
-    orthosisHints.push("Оценить, помогает ли ортез удерживать голень и колено, не провоцирует ли лишнюю тыльную флексию.");
+  if (!deviations.length) {
+    deviations.push("Выраженных отличий от нормы по выбранным кадрам не видно.");
   }
 
-  if (allHints.some((hint) => hint.includes("фронтальная асимметрия") || hint.includes("вальгус") || hint.includes("варус"))) {
-    observations.push("Есть фронтальная асимметрия нижних конечностей.");
-    checks.push("Проверить ось бедро–колено–стопа, ротацию бедра, положение пятки и опору в обуви.");
-    orthosisHints.push("Посмотреть, не нужен ли больший медио-латеральный контроль или коррекция положения стопы.");
-  }
-
-  if (allHints.some((hint) => hint.includes("Таз стоит") || hint.includes("Плечи"))) {
-    observations.push("Есть компенсации выше стопы: таз/плечи могут участвовать в паттерне.");
-    checks.push("Проверить разницу длины, перекос таза, баланс и перенос веса.");
-    orthosisHints.push("Сравнить высоту и симметрию опоры в ортезе/обуви до и после коррекции.");
-  }
-
-  if (observations.length === 1) {
-    observations.push("По текущим простым правилам нет яркого красного флага, но это не значит, что походка нормотипична.");
-    checks.push("Сравнить до/после, спросить про зацеп носком, усталость, боль, падения и ощущение устойчивости.");
-    orthosisHints.push("Использовать результат как чек-лист, а не как диагноз или финальное решение по ортезу.");
+  if (!nextSteps.length) {
+    nextSteps.push("При сомнениях выбрать другой кадр шага или добавить фото спереди, сзади и сбоку.");
   }
 
   return {
-    observations: unique(observations),
-    checks: unique(checks),
-    orthosisHints: unique(orthosisHints),
+    zones: unique(zones),
+    deviations: unique(deviations).slice(0, 8),
+    nextSteps: unique(nextSteps).slice(0, 10),
   };
+}
+
+function getWorstZone(zones) {
+  const order = ["normal", "mild", "moderate", "severe"];
+  if (!zones.length) return "unknown";
+
+  return zones.reduce((worst, zone) => {
+    return order.indexOf(zone) > order.indexOf(worst) ? zone : worst;
+  }, "normal");
 }
 
 function drawAnnotatedImage(image, landmarks, metrics) {
